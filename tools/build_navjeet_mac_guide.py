@@ -11,7 +11,7 @@ from docx.shared import Inches, Pt, RGBColor
 
 ROOT = Path(__file__).resolve().parents[1]
 DOCS = ROOT / "docs"
-DOCX_PATH = DOCS / "Sundhar_JobRight_Mac_Guide.docx"
+DOCX_PATH = DOCS / "Navjeet_JobRight_Mac_Guide.docx"
 
 NAVY = "17324D"
 BLUE = "2867B2"
@@ -235,7 +235,7 @@ def add_checklist_table(doc, rows):
 def add_footer(section):
     p = section.footer.paragraphs[0]
     p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    r = p.add_run("JobRight Auto-Skip | Private setup guide for Sundhar")
+    r = p.add_run("JobRight Auto-Skip | Private setup guide for Navjeet")
     set_font(r, 7.5, False, GRAY)
 
 
@@ -296,7 +296,7 @@ def build():
     add_title(
         doc,
         "JobRight Auto-Skip",
-        "Simple Mac setup and safe-use guide for Sundhar | Software Engineer edition",
+        "Simple Mac setup and safe-use guide for Navjeet | Software Engineer edition",
     )
     add_callout(
         doc,
@@ -307,7 +307,7 @@ def build():
     )
     add_heading(doc, "The whole process", 1)
     for number, title, detail in (
-        (1, "Accept the private GitHub invitation", "Use the GitHub account connected to isundhar3@gatech.edu."),
+        (1, "Accept the private GitHub invitation", "Use the invited Georgia Tech GitHub account."),
         (2, "Download the extension", "Clone the private repository to your Mac."),
         (3, "Replace the owner's personal data", "Use your resume, contact details, work authorization, sponsorship, location, and salary preferences."),
         (4, "Describe your software-engineering profile", "Add only skills, years, projects, and achievements that are true."),
@@ -318,7 +318,7 @@ def build():
 
     add_heading(doc, "Before you begin", 1)
     add_bullet(doc, "A MacBook with Google Chrome installed")
-    add_bullet(doc, "A GitHub account connected to isundhar3@gatech.edu")
+    add_bullet(doc, "The invited Georgia Tech GitHub account")
     add_bullet(doc, "Your current software-engineering resume as a PDF")
     add_bullet(doc, "Your LinkedIn URL, phone number, location, and salary target")
     add_bullet(doc, "Your exact work-authorization and sponsorship answers")
@@ -334,7 +334,7 @@ def build():
     add_title(doc, "1. Get the private files", "Accept the invitation, then download the repository.")
     add_heading(doc, "Accept the invitation", 1)
     add_step(doc, 1, "Open the GitHub email", "Look for an invitation to PrabhjotAhluwalia/jobright-autoskip.")
-    add_step(doc, 2, "Sign in to GitHub", "Use the account associated with isundhar3@gatech.edu.")
+    add_step(doc, 2, "Sign in to GitHub", "Use the invited Georgia Tech GitHub account.")
     add_step(doc, 3, "Click Accept invitation", "The repository will remain private after you accept.")
     add_heading(doc, "Download it with Terminal", 1)
     add_body(doc, "Open Terminal: press Command + Space, type Terminal, then press Return.")
@@ -343,7 +343,7 @@ def build():
     add_command(doc, "cd ~/Documents")
     add_command(doc, "git clone https://github.com/PrabhjotAhluwalia/jobright-autoskip.git")
     add_command(doc, "cd jobright-autoskip")
-    add_command(doc, "git switch -c sundhar/profile")
+    add_command(doc, "git switch -c navjeet/profile")
     add_callout(
         doc,
         "If GitHub asks for a password",
@@ -377,7 +377,7 @@ def build():
     )
     add_heading(doc, "C. Replace the resume", 1)
     add_step(doc, 1, "Remove the existing resume", "Delete the other candidate's PDF from the assets folder.")
-    add_step(doc, 2, "Add your resume", "Use a clear filename such as Sundhar_Software_Engineer_Resume.pdf.")
+    add_step(doc, 2, "Add your resume", "Use a clear filename such as Navjeet_Software_Engineer_Resume.pdf.")
     add_step(doc, 3, "Update ats_content.js", "Change FALLBACK_RESUME_PATH and FALLBACK_RESUME_NAME to your filename.")
     add_step(doc, 4, "Update manifest.json", "Replace the old resume filename under web_accessible_resources.")
 
@@ -492,7 +492,7 @@ def build():
             ("Experience", "Years, employers, education, skills, and projects are factual"),
             ("Options", "Selected radio buttons and checkboxes stay selected"),
             ("Submission", "A successful application is counted once; failures are not counted"),
-            ("Timeout", "A genuinely stuck job skips after 1 minute 20 seconds without progress"),
+            ("Timeout", "A genuinely stuck job saves a screenshot and skips after 100 seconds without progress"),
             ("Prompt cycle", "The system prompt appears only after 10 confirmed successful submissions"),
         ],
     )
@@ -514,7 +514,7 @@ def build():
     add_body(doc, "Pause immediately. Capture the full question and every answer choice. Do not continue until the matching rule is corrected.")
     add_heading(doc, "GitHub updates are available", 1)
     add_command(doc, "cd ~/Documents/jobright-autoskip")
-    add_command(doc, "git switch sundhar/profile")
+    add_command(doc, "git switch navjeet/profile")
     add_command(doc, "git fetch origin")
     add_command(doc, "git rebase origin/main")
     add_callout(

@@ -26,10 +26,11 @@ officially in review
 background is a match
 already applied to this position
 only accept one application for the same role
-couldn't submit your application
-couldn’t submit your application
+You’ve reached your application limit for now
+apply to the same role once every 60 days
 application limit
 reached your application limit
-Submit resume. Check!
+Submitted successfully
+application limit
 a recruiter will contact you
 Thank you for your

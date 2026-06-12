@@ -47,10 +47,17 @@ let alive                = true;
 let lastMoreJobsPromptAt = 0;
 let lastRetryClickAt     = 0;
 let lastTerminalAppliedAt = 0;
+let appliedTransitionTimer = null;
+let appliedTransitionSignature = '';
+let leverProtectedJobSignature = '';
+let leverConfirmedSuccessSignature = '';
 let stuckJobSignature = '';
 let stuckJobProgressSignature = '';
 let stuckJobLastProgressAt = 0;
 let stuckJobSkipSignature = '';
+let stuckJobScreenshotSignature = '';
+let pendingStuckScreenshotSignature = '';
+let lastStuckScreenshotAttemptAt = 0;
 let submissionCountSincePrompt = 0;
 let submissionSeenCounts = new Map();
 let submissionCounterReady = false;
@@ -81,6 +88,8 @@ let titleExclusionLoading = false;
 let titleRegexExclusionCache = null;
 let titleRegexExclusionLoading = false;
 let terminalSuccessPhraseCache = [];
+let builtInTerminalSuccessPhrases = [];
+let customTerminalSuccessPhrases = [];
 let terminalSuccessPhraseLoading = false;
 const managedIntervalIds = [];
 const autoQueueAddedKeys = new Set();
@@ -105,7 +114,8 @@ globalThis.__jobrightContentPing = () => {
 
 const MORE_JOBS_QUESTION = 'all jobs application have been completed. do you want me to pull more jobs to apply now ?';
 const JOBRIGHT_QUEUE_LIMIT = 40;
-const JOB_STUCK_TIMEOUT_MS = 80 * 1000;
+const JOB_STUCK_TIMEOUT_MS = 100 * 1000;
+const STUCK_SCREENSHOT_RETRY_MS = 10 * 1000;
 const SYSTEM_PROMPT_SUBMISSION_INTERVAL = 10;
 const SUBMISSION_COUNT_STORAGE_KEY = 'jobrightSubmissionCountSincePrompt';
 const SUBMISSION_SEEN_STORAGE_KEY = 'jobrightSubmissionSeenCounts';
@@ -123,6 +133,7 @@ const MORE_JOBS_PROMPT_RETRY_GUARD_MS = 3_000;
 const JOBRIGHT_EXCLUDED_TITLES_FILE = 'jobright_excluded_job_titles.txt';
 const JOBRIGHT_EXCLUDED_TITLE_REGEXES_FILE = 'jobright_excluded_job_title_regexes.txt';
 const JOBRIGHT_TERMINAL_SUCCESS_PHRASES_FILE = 'jobright_terminal_success_phrases.txt';
+const CUSTOM_TERMINAL_SUCCESS_PHRASES_KEY = 'customTerminalSuccessPhrases';
 const JOBRIGHT_TITLE_EXCLUSION_FALLBACKS = [
   'product marketing manager',
   'product manager, marketing',
@@ -149,6 +160,7 @@ function shutdown(reason) {
   clearTimeout(debounceTimer);
   clearTimeout(pendingChatPromptTimer);
   clearTimeout(autoQueueTimer);
+  clearTimeout(appliedTransitionTimer);
   managedIntervalIds.forEach(clearInterval);
   observer.disconnect();
   console.log(`[JobRight Auto-Skip] stopped (${reason})`);
@@ -253,11 +265,15 @@ function getActiveJobContext() {
 }
 
 function getActiveApplicationCard() {
-  const headings = [...document.querySelectorAll('div, p, span, h1, h2, h3, h4')]
-    .filter(el =>
-      isVisibleElement(el) &&
-      normalizeText(el.textContent) === 'job application started'
-    )
+  const headings = [];
+  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+  let textNode;
+  while ((textNode = walker.nextNode())) {
+    if (normalizeText(textNode.nodeValue) !== 'job application started') continue;
+    const heading = textNode.parentElement;
+    if (heading && hasRenderedBox(heading)) headings.push(heading);
+  }
+  headings
     .sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top);
 
   for (const heading of headings) {
@@ -288,23 +304,59 @@ function getActiveApplicationSnapshot() {
     .map(line => line.replace(/\s+/g, ' ').trim())
     .filter(Boolean);
   const companyLineIndex = lines.findIndex(line => /[·•]/.test(line));
+  const companyLineText = companyLineIndex >= 0 ? lines[companyLineIndex] : '';
   const companyLine = companyLineIndex >= 0
-    ? lines[companyLineIndex].replace(/\b\d+\s+(?:minutes?|hours?|days?)\s+ago\b/gi, '').trim()
+    ? (
+        companyLineText.replace(/\b\d+\s+(?:minutes?|hours?|days?)\s+ago\b/gi, '').replace(/[·•]/g, '').trim() ||
+        lines[companyLineIndex - 1] ||
+        ''
+      )
     : '';
   const titleLine = companyLineIndex >= 0
     ? lines.slice(companyLineIndex + 1).find(line =>
-        !/^(autofill|skip|generate custom resume|confirm custom resume|analyze application site|fill out application form|submit application)$/i.test(line)
+        !/^(?:\d+\s+(?:minutes?|hours?|days?)\s+ago|autofill|skip|generate custom resume|confirm custom resume|analyze application site|fill out application form|submit application)$/i.test(line)
       ) || ''
     : '';
   const signature = normalizeText(
     `${companyLine || context.company || ''}|${titleLine || context.title || ''}`,
   );
-  const progressSignature = cardText
-    .replace(/\b\d+\s+(?:minutes?|hours?|days?)\s+ago\b/g, '')
-    .replace(/\s+/g, ' ')
-    .slice(0, 1_500);
+  const requiredCount = cardText.match(/\b\d+\s*\/\s*\d+\s+required fields filled\b/)?.[0] || '';
+  const stage = [
+    'generate custom resume',
+    'confirm custom resume',
+    'analyze application site',
+    'fill out application form',
+    'submit application',
+  ].filter(label => cardText.includes(label)).join('|');
+  const state = [
+    /\baction required\b/.test(cardText) ? 'action-required' : '',
+    /\bform complete\b/.test(cardText) ? 'form-complete' : '',
+    /\bapplication submitted\b/.test(cardText) ? 'submitted' : '',
+  ].filter(Boolean).join('|');
+  const progressSignature = `${stage}|${requiredCount}|${state}`;
+  const timeoutEligible = cardText.includes('fill out application form') && (
+    !!requiredCount ||
+    /\bplease fill in (?:these )?\d+ missing fields?\b/.test(cardText) ||
+    /\bform complete\b/.test(cardText) ||
+    /\bsubmit now\b/.test(cardText) ||
+    /\bi['\u2019]ve applied\b/.test(cardText)
+  );
+  const snapshotContext = {
+    company: companyLine || context.company || '',
+    title: titleLine || context.title || '',
+    hints: [
+      companyLine || context.company || '',
+      titleLine || context.title || '',
+    ].filter(Boolean),
+  };
 
-  return { card, signature, progressSignature, context };
+  return {
+    card,
+    signature,
+    progressSignature,
+    timeoutEligible,
+    context: snapshotContext,
+  };
 }
 
 function publishActiveJobContext(force = false) {
@@ -890,8 +942,45 @@ function triggerIveApplied(forceClick = false) {
     btn.removeAttribute('disabled');
     btn.removeAttribute('aria-disabled');
   }
-  clickLikeUser(btn);
+  btn.scrollIntoView?.({ block: 'center', inline: 'nearest' });
+  btn.click();
   console.log('[JobRight Auto-Skip] clicked I’ve Applied after ATS submission');
+  return true;
+}
+
+function ensureIveAppliedTransition(confirmedSuccess = false) {
+  const initial = getActiveApplicationSnapshot();
+  const signature = initial?.signature || '';
+  if (appliedTransitionTimer && signature && appliedTransitionSignature === signature) return true;
+
+  clearTimeout(appliedTransitionTimer);
+  appliedTransitionSignature = signature;
+  let attempts = 0;
+
+  const attempt = () => {
+    const current = getActiveApplicationSnapshot();
+    if (!current || (signature && current.signature !== signature)) {
+      clearTimeout(appliedTransitionTimer);
+      appliedTransitionTimer = null;
+      appliedTransitionSignature = '';
+      return;
+    }
+
+    attempts++;
+    triggerIveApplied(true);
+    if (attempts < 8) {
+      appliedTransitionTimer = setTimeout(attempt, 750);
+      return;
+    }
+
+    appliedTransitionTimer = null;
+    appliedTransitionSignature = '';
+    if (confirmedSuccess && skipActiveApplication('ATS success after I’ve Applied retries')) {
+      recordConfirmedSuccessfulSubmissions(1, 'ATS success fallback');
+    }
+  };
+
+  attempt();
   return true;
 }
 
@@ -900,8 +989,18 @@ function findActiveApplicationCardSkip() {
   return card ? findSkipControlInContainer(card) : null;
 }
 
-function skipActiveApplication(reason) {
+function skipActiveApplication(reason, { afterScreenshot = false } = {}) {
   const snapshot = getActiveApplicationSnapshot();
+  if (!afterScreenshot &&
+      snapshot?.signature &&
+      pendingStuckScreenshotSignature === snapshot.signature) {
+    console.log(`[JobRight Auto-Skip] blocked Skip while screenshot is pending (${reason})`);
+    return false;
+  }
+  if (snapshot?.signature && snapshot.signature === leverProtectedJobSignature) {
+    console.log(`[JobRight Auto-Skip] blocked Skip for active Lever application (${reason})`);
+    return false;
+  }
   const skip = snapshot?.card ? findSkipControlInContainer(snapshot.card) : null;
   if (!skip) return false;
   clickLikeUser(skip);
@@ -910,15 +1009,77 @@ function skipActiveApplication(reason) {
   return true;
 }
 
+function requestStuckJobScreenshot(snapshot, skipAfterCapture = true) {
+  if (!snapshot?.signature ||
+      pendingStuckScreenshotSignature === snapshot.signature ||
+      Date.now() - lastStuckScreenshotAttemptAt < STUCK_SCREENSHOT_RETRY_MS) {
+    return;
+  }
+
+  pendingStuckScreenshotSignature = snapshot.signature;
+  lastStuckScreenshotAttemptAt = Date.now();
+  try {
+    snapshot.card.scrollIntoView?.({ block: 'center', inline: 'nearest' });
+  } catch (_) {}
+
+  // Give Brave two paints after scrolling so captureVisibleTab records the
+  // active application card, not the previous scroll position.
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    setTimeout(() => safeChrome(() => {
+      chrome.runtime.sendMessage({
+        type: 'CAPTURE_STUCK_JOB_SCREENSHOT',
+        context: snapshot.context || {},
+      }, response => {
+        pendingStuckScreenshotSignature = '';
+        if (chrome.runtime.lastError || !response?.saved) {
+          console.warn(
+            '[JobRight Auto-Skip] stuck-job screenshot failed; automatic skip will retry',
+            chrome.runtime.lastError?.message || response?.error || '',
+          );
+          return;
+        }
+
+        const current = getActiveApplicationSnapshot();
+        if (!current || current.signature !== snapshot.signature ||
+            current.progressSignature !== snapshot.progressSignature) {
+          return;
+        }
+
+        stuckJobScreenshotSignature = snapshot.signature;
+        console.log(`[JobRight Auto-Skip] saved stuck-job screenshot to ${response.location}`);
+        if (!skipAfterCapture) {
+          console.log('[JobRight Auto-Skip] Lever application remains protected from timeout skip');
+          return;
+        }
+        if (skipActiveApplication(
+          'no progress for 100 seconds after screenshot',
+          { afterScreenshot: true },
+        )) {
+          stuckJobSkipSignature = snapshot.signature;
+        }
+      });
+    }), 250);
+  }));
+}
+
 function handleTerminalApplicationState(forceIveApplied = false) {
   if (!autoAppliedEnabled) return false;
-  if (triggerIveApplied(forceIveApplied)) return true;
+  const signature = getActiveApplicationSnapshot()?.signature || '';
+  if (signature && signature === leverProtectedJobSignature) {
+    leverConfirmedSuccessSignature = signature;
+    leverProtectedJobSignature = '';
+  }
+  if (findIveAppliedButton(forceIveApplied)) return ensureIveAppliedTransition(true);
   return skipActiveApplication('terminal application state');
 }
 
 function handleAtsTerminalApplicationState(confirmedSuccess = false) {
   if (!autoAppliedEnabled) return false;
-  if (triggerIveApplied(true)) return true;
+  if (confirmedSuccess) {
+    leverConfirmedSuccessSignature = getActiveApplicationSnapshot()?.signature || '';
+    leverProtectedJobSignature = '';
+  }
+  if (findIveAppliedButton(true)) return ensureIveAppliedTransition(confirmedSuccess);
 
   const skipped = skipActiveApplication(
     confirmedSuccess ? 'ATS confirmed success' : 'ATS terminal state',
@@ -932,6 +1093,11 @@ function handleAtsTerminalApplicationState(confirmedSuccess = false) {
 
 function handleAtsTerminalFailureState() {
   if (!autoAppliedEnabled) return false;
+  const snapshot = getActiveApplicationSnapshot();
+  if (snapshot?.signature && snapshot.signature === leverProtectedJobSignature) {
+    console.log('[JobRight Auto-Skip] ignored Lever failure until confirmed submission');
+    return true;
+  }
   return skipActiveApplication('ATS submission failure or application limit');
 }
 
@@ -941,6 +1107,8 @@ function watchForStuckApplication() {
     stuckJobProgressSignature = '';
     stuckJobLastProgressAt = 0;
     stuckJobSkipSignature = '';
+    stuckJobScreenshotSignature = '';
+    pendingStuckScreenshotSignature = '';
     return;
   }
 
@@ -950,15 +1118,41 @@ function watchForStuckApplication() {
     stuckJobProgressSignature = '';
     stuckJobLastProgressAt = 0;
     stuckJobSkipSignature = '';
+    stuckJobScreenshotSignature = '';
+    pendingStuckScreenshotSignature = '';
     return;
   }
 
+  // Resume generation and application-site analysis can legitimately take
+  // longer than 100 seconds. Arm the timeout only after JobRight has reached
+  // the form/action stage and has reported form progress or controls.
+  if (!snapshot.timeoutEligible) {
+    stuckJobSignature = snapshot.signature;
+    stuckJobProgressSignature = snapshot.progressSignature;
+    stuckJobLastProgressAt = 0;
+    stuckJobSkipSignature = '';
+    stuckJobScreenshotSignature = '';
+    pendingStuckScreenshotSignature = '';
+    return;
+  }
+
+  if (leverProtectedJobSignature &&
+      snapshot.signature !== leverProtectedJobSignature) {
+    leverProtectedJobSignature = '';
+  }
+  if (leverConfirmedSuccessSignature &&
+      snapshot.signature !== leverConfirmedSuccessSignature) {
+    leverConfirmedSuccessSignature = '';
+  }
+
   const now = Date.now();
-  if (snapshot.signature !== stuckJobSignature) {
+  if (snapshot.signature !== stuckJobSignature || !stuckJobLastProgressAt) {
     stuckJobSignature = snapshot.signature;
     stuckJobProgressSignature = snapshot.progressSignature;
     stuckJobLastProgressAt = now;
     stuckJobSkipSignature = '';
+    stuckJobScreenshotSignature = '';
+    pendingStuckScreenshotSignature = '';
     return;
   }
 
@@ -966,6 +1160,8 @@ function watchForStuckApplication() {
     stuckJobProgressSignature = snapshot.progressSignature;
     stuckJobLastProgressAt = now;
     stuckJobSkipSignature = '';
+    stuckJobScreenshotSignature = '';
+    pendingStuckScreenshotSignature = '';
     return;
   }
 
@@ -974,9 +1170,14 @@ function watchForStuckApplication() {
     return;
   }
 
-  if (skipActiveApplication('no progress for 1 minute 20 seconds')) {
+  if (stuckJobScreenshotSignature === snapshot.signature &&
+      snapshot.signature !== leverProtectedJobSignature &&
+      skipActiveApplication('no progress for 100 seconds after screenshot')) {
     stuckJobSkipSignature = snapshot.signature;
+    return;
   }
+
+  requestStuckJobScreenshot(snapshot, snapshot.signature !== leverProtectedJobSignature);
 }
 
 function parseTerminalSuccessPhrases(text) {
@@ -986,8 +1187,36 @@ function parseTerminalSuccessPhrases(text) {
     .filter(Boolean);
 }
 
+function rebuildTerminalSuccessPhraseCache() {
+  terminalSuccessPhraseCache = [
+    ...new Set([
+      ...builtInTerminalSuccessPhrases,
+      ...customTerminalSuccessPhrases,
+    ]),
+  ];
+}
+
+function normalizeStoredTerminalSuccessPhrases(value) {
+  const phrases = Array.isArray(value)
+    ? value.map(item => normalizeText(item))
+    : parseTerminalSuccessPhrases(value);
+  return [...new Set(phrases.filter(Boolean))];
+}
+
+function loadCustomTerminalSuccessPhrases() {
+  safeChrome(() => {
+    chrome.storage.local.get([CUSTOM_TERMINAL_SUCCESS_PHRASES_KEY], stored => {
+      customTerminalSuccessPhrases = normalizeStoredTerminalSuccessPhrases(
+        stored[CUSTOM_TERMINAL_SUCCESS_PHRASES_KEY]
+      );
+      rebuildTerminalSuccessPhraseCache();
+      handleJobrightStatusPrompts();
+    });
+  });
+}
+
 function loadTerminalSuccessPhrases() {
-  if (terminalSuccessPhraseCache.length || terminalSuccessPhraseLoading) {
+  if (builtInTerminalSuccessPhrases.length || terminalSuccessPhraseLoading) {
     return terminalSuccessPhraseCache;
   }
   terminalSuccessPhraseLoading = true;
@@ -998,11 +1227,17 @@ function loadTerminalSuccessPhrases() {
   }
   fetch(url)
     .then(res => res.ok ? res.text() : '')
-    .then(text => { terminalSuccessPhraseCache = parseTerminalSuccessPhrases(text); })
+    .then(text => {
+      builtInTerminalSuccessPhrases = parseTerminalSuccessPhrases(text);
+      rebuildTerminalSuccessPhraseCache();
+    })
     .catch(() => {})
     .finally(() => { terminalSuccessPhraseLoading = false; });
   return terminalSuccessPhraseCache;
 }
+
+loadTerminalSuccessPhrases();
+loadCustomTerminalSuccessPhrases();
 
 function hasRightPaneApplicationSuccess() {
   const text = (document.body?.innerText || document.body?.textContent || '');
@@ -1023,6 +1258,7 @@ function hasRightPaneApplicationSuccess() {
   return [
     /\bthank you(?:\s+\w+){0,5}\s+for applying\b/i,
     /\bthank you(?:\s+\w+){0,8}\s+for your interest\b/i,
+    /\bthank you(?:\s+\w+){0,8}\s+for your interest\b.{0,240}\b(?:we |we(?:'|’)ve )?received your application\b/is,
     /\byou did it\b/i,
     /\bofficially in review\b/i,
     /\byour application (has been |was )?(received|submitted|sent)\b/i,
@@ -1822,15 +2058,15 @@ function closeFiltersPanel() {
 
 // ─── CASE 1 – Confirm-bubble Skip ─────────────────────────────────────────────
 function findSkipControlInContainer(container) {
-  return [...container.querySelectorAll('button, a, [role="button"]')]
+  return [...container.querySelectorAll('button, a, [role="button"], span')]
     .filter(el => {
-      if (!isVisibleElement(el) || el.disabled) return false;
+      if (!hasRenderedBox(el) || el.disabled) return false;
       const text = normalizeText(el.textContent);
       const aria = normalizeText(el.getAttribute('aria-label') || '');
       const title = normalizeText(el.getAttribute('title') || '');
       if (![text, aria, title].some(value => value === 'skip')) return false;
       if (el.matches('button') && el.className?.includes?.('ant-btn-primary')) return false;
-      return true;
+      return !el.matches('span') || getComputedStyle(el).cursor === 'pointer';
     })
     .sort((a, b) => {
       const ar = a.getBoundingClientRect();
@@ -1840,8 +2076,11 @@ function findSkipControlInContainer(container) {
 }
 
 function findTriggeredSkipContainer() {
+  const activeCard = getActiveApplicationCard();
+  if (!activeCard) return null;
   const containers = [];
   const addContainer = (el, label) => {
+    if (el !== activeCard && !activeCard.contains(el)) return;
     if (!isVisibleElement(el)) return;
     const text = normalizeText(el.innerText || el.textContent || '');
     if (!text || text.length > 1800) return;
@@ -1908,9 +2147,12 @@ function findConfirmBubbleSkip() {
 
 // ─── CASE 2 – Analyze-site bubble → card-level Skip ──────────────────────────
 function findAnalyzeBubbleCardSkip() {
+  const activeCard = getActiveApplicationCard();
+  if (!activeCard) return null;
   const allElements = document.querySelectorAll('[class]');
 
   for (const el of allElements) {
+    if (el !== activeCard && !activeCard.contains(el)) continue;
     if (el.children.length === 0) continue;
 
     const text = (el.innerText || el.textContent || '').toLowerCase();
@@ -1946,6 +2188,7 @@ function findAnalyzeBubbleCardSkip() {
         return { btn: candidate, label: 'analyze-site card-skip', company };
       }
 
+      if (ancestor === activeCard) break;
       ancestor = ancestor.parentElement;
     }
   }
@@ -1998,6 +2241,11 @@ function findBlocklistSkip() {
 // ─── CORE ─────────────────────────────────────────────────────────────────────
 function tryClickSkip() {
   if (!alive || !enabled) return;
+  const activeSnapshot = getActiveApplicationSnapshot();
+  if (activeSnapshot?.signature &&
+      pendingStuckScreenshotSignature === activeSnapshot.signature) return;
+  if (activeSnapshot?.signature &&
+      activeSnapshot.signature === leverProtectedJobSignature) return;
   syncSharedBlocklist();
 
   const now = Date.now();
@@ -2131,15 +2379,50 @@ try {
       reply({ ok: placeOtpInJobrightChat(msg.otp) });
     } else if (msg.type === 'SEND_JOBRIGHT_SYSTEM_PROMPT') {
       reply({ ok: sendJobrightSystemPrompt(msg.prompt) });
+    } else if (msg.type === 'ATS_FRAME_STATE') {
+      let host = '';
+      try { host = new URL(msg.atsUrl || msg.atsOrigin || '').hostname; } catch (_) {}
+      if (/(^|\.)lever\.co$/i.test(host)) {
+        const signature = getActiveApplicationSnapshot()?.signature || '';
+        if (signature && signature !== leverConfirmedSuccessSignature) {
+          leverProtectedJobSignature = signature;
+        }
+      }
+      reply({ ok: true, protected: !!leverProtectedJobSignature });
     } else if (msg.type === 'TRIGGER_IVE_APPLIED') {
+      let host = '';
+      try { host = new URL(msg.atsUrl || msg.atsOrigin || '').hostname; } catch (_) {}
+      const isLever = /(^|\.)lever\.co$/i.test(host);
       // Failed/limited applications must never be marked as applied.
       reply({
-        ok: msg.confirmedFailure
+        ok: msg.confirmedFailure && isLever
+          ? true
+          : msg.confirmedFailure
           ? handleAtsTerminalFailureState()
           : handleAtsTerminalApplicationState(!!msg.confirmedSuccess),
       });
     } else if (msg.type === 'GET_ACTIVE_JOB_CONTEXT') {
       reply({ ok: true, ...getActiveJobContext() });
+    } else if (msg.type === 'GET_STUCK_WATCH_STATE') {
+      const snapshot = getActiveApplicationSnapshot();
+      reply({
+        ok: true,
+        enabled,
+        runActive: isJobrightApplicationRunActive(),
+        snapshot: snapshot ? {
+          signature: snapshot.signature,
+          progressSignature: snapshot.progressSignature,
+          timeoutEligible: snapshot.timeoutEligible,
+        } : null,
+        stuckJobSignature,
+        stuckJobProgressSignature,
+        stuckJobElapsedMs: stuckJobLastProgressAt
+          ? Date.now() - stuckJobLastProgressAt
+          : null,
+        stuckJobScreenshotSignature,
+        pendingStuckScreenshotSignature,
+        leverProtectedJobSignature,
+      });
     }
     return true;
   });
@@ -2205,9 +2488,25 @@ safeChrome(() =>
   }),
 );
 
+safeChrome(() =>
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== 'local' || !changes[CUSTOM_TERMINAL_SUCCESS_PHRASES_KEY]) return;
+    customTerminalSuccessPhrases = normalizeStoredTerminalSuccessPhrases(
+      changes[CUSTOM_TERMINAL_SUCCESS_PHRASES_KEY].newValue
+    );
+    rebuildTerminalSuccessPhraseCache();
+    handleJobrightStatusPrompts();
+  }),
+);
+
 managedIntervalIds.push(
   setInterval(() => { try { syncSharedBlocklist(); } catch (_) {} }, 15_000),
   setInterval(() => {
+    try {
+      watchForStuckApplication();
+    } catch (err) {
+      console.warn('[JobRight Auto-Skip] stuck-job watcher failed', err);
+    }
     try {
       closeFiltersPanel();
       handleJobrightStatusPrompts();
@@ -2215,7 +2514,6 @@ managedIntervalIds.push(
       publishFormCompleteState();
       publishJobrightMissingFields();
       publishActiveJobContext();
-      watchForStuckApplication();
       tryClickSkip();
     } catch (_) {}
   }, 1_500),

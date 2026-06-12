@@ -1,11 +1,22 @@
 import http from 'node:http';
-import { readFile, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const PORT = Number(process.env.JOBRIGHT_BLOCKLIST_PORT || 17373);
 const DATA_FILE = process.env.JOBRIGHT_BLOCKLIST_FILE ||
   join(dirname(fileURLToPath(import.meta.url)), 'shared_blocklist.json');
+const WINDOWS_ONEDRIVE = process.env.OneDriveConsumer || process.env.OneDrive;
+const DEFAULT_DESKTOP_DIR =
+  process.platform === 'win32' &&
+  WINDOWS_ONEDRIVE &&
+  existsSync(join(WINDOWS_ONEDRIVE, 'Desktop'))
+    ? join(WINDOWS_ONEDRIVE, 'Desktop')
+    : join(homedir(), 'Desktop');
+const SCREENSHOT_DIR = process.env.JOBRIGHT_SCREENSHOT_DIR ||
+  join(DEFAULT_DESKTOP_DIR, 'SS');
 
 function normalizeCompany(name) {
   return String(name || '').toLowerCase().trim();
@@ -35,6 +46,25 @@ async function readJsonBody(req) {
   for await (const chunk of req) chunks.push(chunk);
   if (!chunks.length) return {};
   return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+}
+
+function safeFilename(value = '') {
+  return String(value)
+    .replace(/[<>:"/\\|?*\u0000-\u001f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 180) || `JobRight Stuck ${Date.now()}.png`;
+}
+
+async function saveScreenshot(body = {}) {
+  const match = String(body.dataUrl || '').match(/^data:image\/png;base64,([A-Za-z0-9+/=\s]+)$/);
+  if (!match) throw new Error('invalid PNG screenshot data');
+  const filename = safeFilename(body.filename);
+  const finalName = filename.toLowerCase().endsWith('.png') ? filename : `${filename}.png`;
+  await mkdir(SCREENSHOT_DIR, { recursive: true });
+  const file = join(SCREENSHOT_DIR, finalName);
+  await writeFile(file, Buffer.from(match[1], 'base64'));
+  return file;
 }
 
 function sendJson(res, status, body) {
@@ -76,6 +106,11 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, { ok: true, blocklist: await writeBlocklist(body.blocklist || []) });
     }
 
+    if (url.pathname === '/screenshot' && req.method === 'POST') {
+      const body = await readJsonBody(req);
+      return sendJson(res, 200, { ok: true, file: await saveScreenshot(body) });
+    }
+
     return sendJson(res, 404, { ok: false, error: 'not found' });
   } catch (error) {
     return sendJson(res, 500, { ok: false, error: error.message });
@@ -85,4 +120,5 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, '127.0.0.1', () => {
   console.log(`JobRight shared blocklist listening on http://127.0.0.1:${PORT}`);
   console.log(`Data file: ${DATA_FILE}`);
+  console.log(`Screenshot directory: ${SCREENSHOT_DIR}`);
 });

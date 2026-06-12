@@ -19,6 +19,7 @@ const JOBRIGHT_PROMPT_FILE  = 'jobright_system_prompt.txt';
 const JOBRIGHT_MORE_JOBS_PROMPT_FILE = 'jobright_more_jobs_prompt.txt';
 
 const SHARED_BLOCKLIST_URL  = 'http://127.0.0.1:17373/blocklist';
+const LOCAL_HELPER_URL      = 'http://127.0.0.1:17373';
 const GMAIL_SCOPES          = 'https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/gmail.send';
 const jobrightFormCompleteByTab = new Map();
 const jobrightActiveContextByTab = new Map();
@@ -107,6 +108,36 @@ function sendJobrightTabMessage(tabId, message, callback = () => {}) {
     }
     sendTabMessage(tabId, message, callback);
   });
+}
+
+async function clickIveAppliedDirectly(tabId) {
+  try {
+    const results = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: () => {
+        const button = [...document.querySelectorAll('button, [role="button"]')]
+          .filter(el => {
+            const rect = el.getBoundingClientRect();
+            const text = (el.textContent || '').trim().toLowerCase().replace(/\s+/g, ' ');
+            return rect.width > 0 && rect.height > 0 &&
+              /^i['\u2019]ve applied\.?$/.test(text);
+          })
+          .sort((a, b) =>
+            b.getBoundingClientRect().bottom - a.getBoundingClientRect().bottom
+          )[0];
+        if (!button) return false;
+        button.disabled = false;
+        button.removeAttribute('disabled');
+        button.removeAttribute('aria-disabled');
+        button.scrollIntoView({ block: 'center', inline: 'nearest' });
+        button.click();
+        return true;
+      },
+    });
+    return results?.some(result => result.result === true) || false;
+  } catch (_) {
+    return false;
+  }
 }
 
 chrome.alarms.onAlarm.addListener((alarm) => {
@@ -263,8 +294,109 @@ async function sharedBlocklistFetch(path = '', options = {}) {
   }
 }
 
+function wait(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function captureVisibleTab(windowId) {
+  return new Promise((resolve, reject) => {
+    chrome.tabs.captureVisibleTab(windowId, { format: 'png' }, dataUrl => {
+      const error = chrome.runtime.lastError;
+      if (error || !dataUrl) reject(new Error(error?.message || 'Brave tab capture failed'));
+      else resolve(dataUrl);
+    });
+  });
+}
+
+function sanitizeScreenshotPart(value = '') {
+  return String(value)
+    .replace(/[<>:"/\\|?*\u0000-\u001f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 60);
+}
+
+function stuckScreenshotFilename(context = {}) {
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const company = sanitizeScreenshotPart(context.company);
+  const title = sanitizeScreenshotPart(context.title);
+  return [
+    'JobRight Stuck',
+    company,
+    title,
+    timestamp,
+  ].filter(Boolean).join(' - ') + '.png';
+}
+
+async function saveScreenshotToDesktop(dataUrl, filename) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 10_000);
+  try {
+    const response = await fetch(`${LOCAL_HELPER_URL}/screenshot`, {
+      method: 'POST',
+      signal: controller.signal,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ dataUrl, filename }),
+    });
+    if (!response.ok) throw new Error(`local screenshot helper ${response.status}`);
+    const result = await response.json();
+    if (!result?.ok) throw new Error(result?.error || 'local screenshot save failed');
+    return { saved: true, location: result.file, fallback: false };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function downloadScreenshotFallback(dataUrl, filename) {
+  return new Promise((resolve, reject) => {
+    chrome.downloads.download({
+      url: dataUrl,
+      filename: `SS/${filename}`,
+      conflictAction: 'uniquify',
+      saveAs: false,
+    }, downloadId => {
+      const error = chrome.runtime.lastError;
+      if (error || !downloadId) reject(new Error(error?.message || 'screenshot download failed'));
+      else resolve({ saved: true, location: `Downloads/SS/${filename}`, fallback: true });
+    });
+  });
+}
+
+async function captureJobrightTabScreenshot(tab, context = {}) {
+  if (!tab?.id || tab.windowId === undefined) throw new Error('JobRight tab unavailable');
+  const activeTabs = await chrome.tabs.query({ active: true, windowId: tab.windowId });
+  const previousActiveTab = activeTabs[0];
+  const mustActivate = previousActiveTab?.id !== tab.id;
+
+  try {
+    if (mustActivate) {
+      await chrome.tabs.update(tab.id, { active: true });
+      await wait(200);
+    }
+    const dataUrl = await captureVisibleTab(tab.windowId);
+    const filename = stuckScreenshotFilename(context);
+    try {
+      return await saveScreenshotToDesktop(dataUrl, filename);
+    } catch (desktopError) {
+      const fallback = await downloadScreenshotFallback(dataUrl, filename);
+      return { ...fallback, desktopError: desktopError.message };
+    }
+  } finally {
+    if (mustActivate && previousActiveTab?.id) {
+      chrome.tabs.update(previousActiveTab.id, { active: true }).catch(() => {});
+    }
+  }
+}
+
 // ATS submission → JobRight "I've Applied" broker
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+  if (msg.type === 'CAPTURE_STUCK_JOB_SCREENSHOT') {
+    captureJobrightTabScreenshot(_sender?.tab, msg.context || {})
+      .then(result => sendResponse({ ok: true, ...result }))
+      .catch(error => sendResponse({ ok: false, saved: false, error: error.message }));
+    return true;
+  }
+
   if (msg.type === 'ATS_FRAME_READY') {
     const tabId = _sender?.tab?.id;
     const frameId = _sender?.frameId;
@@ -272,6 +404,11 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       const frames = atsFrameIdsByTab.get(tabId) || new Set();
       frames.add(frameId);
       atsFrameIdsByTab.set(tabId, frames);
+      sendJobrightTabMessage(tabId, {
+        type: 'ATS_FRAME_STATE',
+        atsOrigin: msg.origin || _sender?.origin || '',
+        atsUrl: msg.url || _sender?.url || '',
+      }, () => {});
       const pendingFields = jobrightMissingFieldsByTab.get(tabId) || [];
       if (pendingFields.length) {
         chrome.tabs.sendMessage(
@@ -332,6 +469,9 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       const send = async () => {
         attempts++;
         sendJobrightTabMessage(target.id, payload, (err, res) => {
+          if (payload.confirmedSuccess) {
+            setTimeout(() => clickIveAppliedDirectly(target.id), 150);
+          }
           if ((err || !res?.ok) && attempts < 8) setTimeout(send, 750);
         });
       };

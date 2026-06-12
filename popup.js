@@ -25,9 +25,40 @@ const gmailText         = document.getElementById('gmailText');
 const gmailStatus       = document.getElementById('gmailStatus');
 const gmailSub          = document.getElementById('gmailSub');
 const gmailBtn          = document.getElementById('gmailBtn');
+const successPhrasesInput = document.getElementById('successPhrasesInput');
+const saveSuccessPhrasesBtn = document.getElementById('saveSuccessPhrasesBtn');
+const clearSuccessPhrasesBtn = document.getElementById('clearSuccessPhrasesBtn');
+const successPhrasesStatus = document.getElementById('successPhrasesStatus');
 
 let currentTab = null;
 const PROFILE_CORRECTION_FLAG = 'atsProfileCorrectionEnabled';
+const CUSTOM_SUCCESS_PHRASES_KEY = 'customTerminalSuccessPhrases';
+
+function normalizePhraseLines(value) {
+  return [...new Set(String(value || '')
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .filter(Boolean))];
+}
+
+function loadCustomSuccessPhrases() {
+  chrome.storage.local.get([CUSTOM_SUCCESS_PHRASES_KEY], stored => {
+    const phrases = Array.isArray(stored[CUSTOM_SUCCESS_PHRASES_KEY])
+      ? stored[CUSTOM_SUCCESS_PHRASES_KEY]
+      : [];
+    successPhrasesInput.value = phrases.join('\n');
+  });
+}
+
+function saveCustomSuccessPhrases(phrases) {
+  chrome.storage.local.set({ [CUSTOM_SUCCESS_PHRASES_KEY]: phrases }, () => {
+    successPhrasesInput.value = phrases.join('\n');
+    successPhrasesStatus.textContent = phrases.length
+      ? `Saved ${phrases.length} custom phrase${phrases.length === 1 ? '' : 's'}.`
+      : 'Custom phrases cleared.';
+    setTimeout(() => { successPhrasesStatus.textContent = ''; }, 2500);
+  });
+}
 
 function setProfileCorrectionUI(enabled) {
   profileCorrectionToggle.className = 'toggle' + (enabled ? '' : ' off');
@@ -250,6 +281,15 @@ chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
 });
 
 loadProfileCorrectionSetting();
+loadCustomSuccessPhrases();
+
+saveSuccessPhrasesBtn.addEventListener('click', () => {
+  saveCustomSuccessPhrases(normalizePhraseLines(successPhrasesInput.value));
+});
+
+clearSuccessPhrasesBtn.addEventListener('click', () => {
+  saveCustomSuccessPhrases([]);
+});
 
 profileCorrectionToggle.addEventListener('click', () => {
   chrome.storage.local.get([PROFILE_CORRECTION_FLAG], (stored) => {
