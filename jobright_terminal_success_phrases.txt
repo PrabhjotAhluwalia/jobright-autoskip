@@ -1,0 +1,35 @@
+# One case-insensitive terminal application phrase per line.
+# When any phrase appears on the ATS page or JobRight right pane,
+# the extension clicks "I've Applied" automatically.
+# Lines beginning with # are ignored.
+
+application submitted
+your application has been submitted
+thanks for applying
+thank you for applying
+successfully submitted
+you have successfully applied
+application received
+we received your application
+we've received your application
+your application is complete
+application complete
+submission successful
+application sent
+thank you for your interest
+we'll be back in touch soon
+will get back to you soon
+interested in joining us
+thrilled that you are interested in joining us
+you did it
+officially in review
+background is a match
+already applied to this position
+only accept one application for the same role
+couldn't submit your application
+couldn’t submit your application
+application limit
+reached your application limit
+Submit resume. Check!
+a recruiter will contact you
+Thank you for your

@@ -1,0 +1,14 @@
+# One excluded job-title phrase per line.
+# Auto Queue Builder skips Autofill jobs when the title contains any phrase here.
+# Lines beginning with # are ignored.
+product marketing manager
+product manager, marketing
+product marketing lead
+product marketing
+marketing product manager
+pmm
+growth marketing
+brand marketing
+content marketing
+engineer
+analyst

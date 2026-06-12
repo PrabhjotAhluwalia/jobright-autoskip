@@ -1,0 +1,14 @@
+# One JavaScript regex per line, without leading/trailing / slashes.
+# Auto Queue Builder skips Autofill jobs when the title matches any regex here.
+# Lines beginning with # are ignored.
+#
+# Senior and above roles are excluded by default. Remove this line if you want them again.
+# \\b(?:senior|sr\\.?)\\b
+\b(?:vp|vice president)\b
+\b(?:director|senior director|sr\.? director)\b
+\bhead of\b
+\bprincipal\b
+\bstaff\b
+\bgroup\s+product\s+manager\b
+\blead\b
+\b(?:[5-9]|\d{2,})\+?\s*years?\s+exp\b

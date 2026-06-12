@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>JobRight Auto-Skip</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      width: 300px;
+      background: #ffffff;
+      color: #111827;
+    }
+
+    .header {
+      background: #0f172a;
+      padding: 14px 16px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .header-icon {
+      width: 28px;
+      height: 28px;
+      background: #22c55e;
+      border-radius: 6px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 14px;
+      flex-shrink: 0;
+    }
+
+    .header-title { font-size: 13px; font-weight: 600; color: #f8fafc; }
+    .header-sub   { font-size: 11px; color: #64748b; margin-top: 1px; }
+
+    .body { padding: 14px 16px; }
+
+    .row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 14px;
+    }
+
+    .row-label { font-size: 13px; font-weight: 500; color: #374151; }
+
+    .status-badge {
+      font-size: 11px; font-weight: 600;
+      padding: 2px 7px; border-radius: 20px; margin-left: 6px;
+    }
+    .status-badge.on  { background: #dcfce7; color: #15803d; }
+    .status-badge.off { background: #f3f4f6; color: #9ca3af; }
+
+    .toggle-wrap { display: flex; align-items: center; gap: 8px; }
+
+    .toggle {
+      position: relative; width: 44px; height: 24px;
+      border-radius: 12px; border: none; cursor: pointer;
+      background: #22c55e; transition: background 0.2s; flex-shrink: 0;
+    }
+    .toggle.off { background: #d1d5db; }
+    .toggle::after {
+      content: ''; position: absolute; top: 4px; left: 4px;
+      width: 16px; height: 16px; border-radius: 50%;
+      background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.25);
+      transition: transform 0.2s;
+    }
+    .toggle:not(.off)::after { transform: translateX(20px); }
+
+    .stat-card {
+      background: #f9fafb; border: 1px solid #e5e7eb;
+      border-radius: 10px; padding: 12px 14px;
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 14px;
+    }
+    .stat-label { font-size: 12px; color: #6b7280; }
+    .stat-count {
+      font-size: 22px; font-weight: 700; color: #22c55e;
+      min-width: 32px; text-align: right;
+    }
+
+    .notice {
+      background: #fffbeb; border: 1px solid #fde68a;
+      border-radius: 8px; padding: 9px 11px;
+      font-size: 11px; color: #92400e; line-height: 1.5;
+    }
+    .notice strong { color: #78350f; }
+
+    .warn {
+      background: #fff7ed; border: 1px solid #fed7aa;
+      border-radius: 8px; padding: 10px 12px;
+      font-size: 12px; color: #c2410c;
+      text-align: center; line-height: 1.5;
+    }
+
+    .reset-btn {
+      width: 100%; margin-top: 12px; padding: 7px;
+      border: 1px solid #e5e7eb; border-radius: 7px;
+      background: #fff; color: #6b7280;
+      font-size: 11px; cursor: pointer; transition: background 0.15s;
+    }
+    .reset-btn:hover { background: #f3f4f6; }
+
+    /* ── Blocklist section ─────────────────────────────────────── */
+    .divider {
+      height: 1px; background: #e5e7eb; margin: 14px 0;
+    }
+
+    .section-title {
+      font-size: 12px; font-weight: 600;
+      color: #374151; margin-bottom: 10px;
+      display: flex; align-items: center; justify-content: space-between;
+    }
+
+    .blocklist-tag {
+      font-size: 10px; font-weight: 500;
+      padding: 1px 6px; border-radius: 10px;
+      background: #e0f2fe; color: #0369a1;
+    }
+
+    .blocklist-empty {
+      font-size: 11px; color: #9ca3af;
+      text-align: center; padding: 8px 0;
+      font-style: italic;
+    }
+
+    .company-list {
+      max-height: 140px; overflow-y: auto;
+      display: flex; flex-direction: column; gap: 4px;
+    }
+
+    .add-company-row  { display: flex; gap: 6px; margin: 0 0 8px; }
+    .add-company-input {
+      flex: 1; padding: 5px 8px; border: 1px solid #e5e7eb; border-radius: 6px;
+      font-size: 11px; color: #374151; background: #fff; outline: none;
+    }
+    .add-company-input:focus { border-color: #6366f1; }
+    .add-company-btn {
+      padding: 5px 10px; background: #6366f1; color: #fff; border: none;
+      border-radius: 6px; font-size: 11px; font-weight: 600; cursor: pointer;
+      flex-shrink: 0; transition: background .15s;
+    }
+    .add-company-btn:hover { background: #4f46e5; }
+
+    .company-item {
+      display: flex; align-items: center;
+      justify-content: space-between;
+      background: #f9fafb; border: 1px solid #e5e7eb;
+      border-radius: 6px; padding: 5px 8px;
+      font-size: 11px;
+    }
+
+    .company-name {
+      color: #374151; flex: 1;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      text-transform: capitalize;
+    }
+
+    .remove-btn {
+      background: none; border: none; cursor: pointer;
+      color: #9ca3af; font-size: 13px; line-height: 1;
+      padding: 0 2px; margin-left: 6px; flex-shrink: 0;
+    }
+    .remove-btn:hover { color: #ef4444; }
+
+    #notJobright { display: none; }
+
+    /* ── Gmail status card ─────────────────────────────────────── */
+    .gmail-card {
+      display: flex; align-items: center; justify-content: space-between;
+      border-radius: 8px; padding: 9px 12px; margin-bottom: 14px;
+      border: 1px solid #e5e7eb; background: #f9fafb;
+    }
+    .gmail-card.connected    { background: #f0fdf4; border-color: #bbf7d0; }
+    .gmail-card.disconnected { background: #fff7ed; border-color: #fed7aa; }
+    .gmail-card.checking     { background: #f8fafc; border-color: #e2e8f0; }
+
+    .gmail-left { display: flex; align-items: center; gap: 8px; }
+    .gmail-dot  { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; background: #d1d5db; }
+    .gmail-dot.connected    { background: #22c55e; }
+    .gmail-dot.disconnected { background: #f97316; }
+    .gmail-dot.checking     { background: #94a3b8; animation: pulse 1.2s infinite; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
+
+    .gmail-text { font-size: 11px; }
+    .gmail-text strong { font-size: 12px; font-weight: 600; display: block; }
+    .gmail-text.connected    strong { color: #15803d; }
+    .gmail-text.disconnected strong { color: #c2410c; }
+    .gmail-text.checking     strong { color: #64748b; }
+    .gmail-sub { color: #9ca3af; font-size: 10px; margin-top: 1px; }
+
+    .gmail-btn {
+      font-size: 11px; font-weight: 600; padding: 5px 10px;
+      border-radius: 6px; border: none; cursor: pointer; flex-shrink: 0;
+      transition: background 0.15s;
+    }
+    .gmail-btn.connect     { background: #22c55e; color: #fff; }
+    .gmail-btn.connect:hover  { background: #16a34a; }
+    .gmail-btn.disconnect  { background: #fee2e2; color: #dc2626; }
+    .gmail-btn.disconnect:hover { background: #fecaca; }
+    .gmail-btn.retry       { background: #fff7ed; color: #c2410c; border: 1px solid #fed7aa; }
+    .gmail-btn.retry:hover { background: #ffedd5; }
+  </style>
+</head>
+<body>
+
+  <div class="header">
+    <div class="header-icon">⚡</div>
+    <div>
+      <div class="header-title">JobRight Auto-Skip</div>
+      <div class="header-sub">jobright.ai</div>
+    </div>
+  </div>
+
+  <div class="body">
+
+    <div class="warn" id="notJobright">
+      Open <strong>jobright.ai</strong> in this tab to use the extension.
+    </div>
+
+    <div id="mainUI">
+      <!-- Auto-skip toggle -->
+      <div class="row">
+        <span class="row-label">
+          Auto-skip
+          <span class="status-badge on" id="statusBadge">ON</span>
+        </span>
+        <div class="toggle-wrap">
+          <button class="toggle" id="toggleBtn" title="Toggle auto-skip"></button>
+        </div>
+      </div>
+
+      <!-- Skip count -->
+      <div class="stat-card">
+        <span class="stat-label">Prompts skipped this session</span>
+        <span class="stat-count" id="skipCount">–</span>
+      </div>
+
+      <!-- What gets skipped -->
+      <div class="notice">
+        <strong>Skips automatically when:</strong><br>
+        1&nbsp; <em>"This job supports application autofill only on the application site"</em><br><br>
+        2&nbsp; <em>"This job requires manual application"</em><br><br>
+        3&nbsp; Green <em>"Analyze application site / Apply Manually"</em> prompt
+      </div>
+
+      <button class="reset-btn" id="resetBtn">Reset count</button>
+
+      <!-- Gmail connection status -->
+      <div class="divider"></div>
+      <div class="section-title" style="margin-bottom:8px;">
+        <span>Gmail (OTP autofill)</span>
+      </div>
+      <div class="gmail-card checking" id="gmailCard">
+        <div class="gmail-left">
+          <div class="gmail-dot checking" id="gmailDot"></div>
+          <div class="gmail-text checking" id="gmailText">
+            <strong id="gmailStatus">Checking...</strong>
+            <span class="gmail-sub" id="gmailSub">Verifying Gmail connection</span>
+          </div>
+        </div>
+        <button class="gmail-btn" id="gmailBtn" style="display:none;"></button>
+      </div>
+
+      <!-- Auto I've Applied toggle -->
+      <div class="divider"></div>
+
+      <div class="row" style="margin-bottom:4px;">
+        <span class="row-label" style="font-size:12px;">
+          Auto "I've Applied" on submission
+          <span class="status-badge on" id="autoAppliedBadge">ON</span>
+        </span>
+        <div class="toggle-wrap">
+          <button class="toggle" id="autoAppliedToggle" title="Auto-click I've Applied when submission is detected"></button>
+        </div>
+      </div>
+      <div style="font-size:10px;color:#9ca3af;margin-bottom:14px;line-height:1.4;">
+        Detects "Application submitted" on Lever, Greenhouse, etc. and clicks automatically.
+      </div>
+
+      <!-- ATS identity correction toggle -->
+      <div class="divider"></div>
+
+      <div class="row" style="margin-bottom:4px;">
+        <span class="row-label" style="font-size:12px;">
+          Correct ATS identity fields
+          <span class="status-badge on" id="profileCorrectionBadge">ON</span>
+        </span>
+        <div class="toggle-wrap">
+          <button class="toggle" id="profileCorrectionToggle" title="Correct stale name, email, phone, and LinkedIn values"></button>
+        </div>
+      </div>
+      <div style="font-size:10px;color:#9ca3af;margin-bottom:14px;line-height:1.4;">
+        Replaces stale profile details in ATS application frames.
+      </div>
+
+      <!-- Auto queue builder toggle -->
+      <div class="divider"></div>
+
+      <div class="row" style="margin-bottom:4px;">
+        <span class="row-label" style="font-size:12px;">
+          Auto-build job queue
+          <span class="status-badge off" id="autoQueueBadge">OFF</span>
+        </span>
+        <div class="toggle-wrap">
+          <button class="toggle off" id="autoQueueToggle" title="Auto-add Autofill jobs up to 40"></button>
+        </div>
+      </div>
+      <div style="font-size:10px;color:#9ca3af;margin-bottom:14px;line-height:1.4;">
+        Adds Autofill matches not on the blocklist, loads more matches, then starts at 40.
+      </div>
+      <div class="divider"></div>
+
+      <div class="section-title">
+        <span>Company Blocklist</span>
+        <span class="blocklist-tag" id="blocklistCount">0 companies</span>
+      </div>
+
+      <!-- Blocklist feature toggle -->
+      <div class="row" style="margin-bottom:10px;">
+        <span class="row-label" style="font-size:12px;font-weight:400;color:#6b7280;">
+          Skip blocklisted companies instantly
+          <span class="status-badge on" id="blocklistBadge">ON</span>
+        </span>
+        <div class="toggle-wrap">
+          <button class="toggle" id="blocklistToggle" title="Toggle blocklist feature"></button>
+        </div>
+      </div>
+
+      <div class="add-company-row">
+        <input type="text" id="addCompanyInput" class="add-company-input"
+               placeholder="Add company name..." maxlength="80" />
+        <button id="addCompanyBtn" class="add-company-btn">+ Add</button>
+      </div>
+
+      <div class="company-list" id="companyList">
+        <div class="blocklist-empty" id="emptyMsg">
+          No companies blocklisted yet.<br>They get added automatically when skipped.
+        </div>
+      </div>
+
+    </div>
+
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

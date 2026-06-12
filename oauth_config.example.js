@@ -1,0 +1,4 @@
+globalThis.JOBRIGHT_OAUTH_CONFIG = {
+  clientId: 'YOUR_GOOGLE_OAUTH_CLIENT_ID',
+  clientSecret: 'YOUR_GOOGLE_OAUTH_CLIENT_SECRET',
+};
