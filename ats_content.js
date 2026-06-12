@@ -1461,7 +1461,119 @@ function labelTextForControl(el) {
   return labels.join(' ');
 }
 
-function checkTermsCheckboxes() {
+function isRequiredAgreementQuestion(root) {
+  const rawText = root?.innerText || root?.textContent || '';
+  const text = normalizeText(rawText);
+  const agreement = /\b(?:agree|agreement|consent|acknowledge|understand|certify|confirm|terms|privacy|by checking this box)\b/.test(text);
+  const mandatory = rawText.includes('*') ||
+    /\b(?:required|this field is required|must|please accept|to proceed)\b/.test(text) ||
+    !!root?.querySelector?.('[required], [aria-required="true"]');
+  return agreement && mandatory;
+}
+
+function scoreRequiredAgreementOption(text = '') {
+  const normalized = normalizeText(text);
+  if (!normalized ||
+      /^(select|choose|please select|none|n\/a|not applicable)\b/.test(normalized) ||
+      /\b(?:do not|don['’]?t|decline|disagree|not agree|refuse|no)\b/.test(normalized)) {
+    return -1;
+  }
+
+  let score = 0;
+  if (/\bunderstand\b/.test(normalized)) score += 40;
+  if (/\bagree\b/.test(normalized)) score += 60;
+  if (/\b(?:acknowledge|accept|consent|certify|confirm)\b/.test(normalized)) score += 45;
+  return score;
+}
+
+function findBestRequiredAgreementOption(options) {
+  return options
+    .map((option, index) => ({
+      option,
+      index,
+      score: scoreRequiredAgreementOption(getChoiceControlText(option)),
+    }))
+    .filter(candidate => candidate.score > 0)
+    .sort((a, b) => b.score - a.score || a.index - b.index)[0]?.option || null;
+}
+
+function selectRequiredAgreementFromOpenDropdown(root, dropdown) {
+  const controlledId = dropdown?.getAttribute('aria-controls') ||
+    dropdown?.getAttribute('aria-owns');
+  const controlledRoot = controlledId ? document.getElementById(controlledId) : null;
+  const optionRoot = controlledRoot && isVisibleElement(controlledRoot)
+    ? controlledRoot
+    : document;
+  const options = [...optionRoot.querySelectorAll(
+    '[role="option"], [role="menuitem"], li, [data-value]'
+  )].filter(el => isVisibleElement(el) && !el.disabled);
+  const option = findBestRequiredAgreementOption(options);
+  if (!option) return false;
+  if (isChoiceControlSelected(option)) return true;
+  if (!claimBooleanAnswerClick(root, 'agree-option', 'required agreement dropdown')) return true;
+  option.click();
+  console.log(
+    `[JobRight Auto-Skip] selected required agreement option: ${getChoiceControlText(option).slice(0, 180)}`
+  );
+  return true;
+}
+
+function chooseRequiredAgreementDropdowns() {
+  const roots = [...document.querySelectorAll(
+    'fieldset, [role="group"], [class*="field"], [class*="question"], section, div'
+  )]
+    .filter(root => {
+      if (!isVisibleElement(root) || !isRequiredAgreementQuestion(root)) return false;
+      return !!root.querySelector(
+        'select, [role="combobox"], button[aria-haspopup="listbox"], [aria-haspopup="listbox"]'
+      );
+    })
+    .filter(root => ![...root.children].some(child =>
+      isVisibleElement(child) &&
+      isRequiredAgreementQuestion(child) &&
+      !!child.querySelector(
+        'select, [role="combobox"], button[aria-haspopup="listbox"], [aria-haspopup="listbox"]'
+      )
+    ))
+    .sort((a, b) =>
+      normalizeText(a.innerText || a.textContent || '').length -
+      normalizeText(b.innerText || b.textContent || '').length
+    );
+
+  for (const root of roots) {
+    const select = root.querySelector('select');
+    if (select) {
+      const option = findBestRequiredAgreementOption([...select.options]);
+      if (!option) continue;
+      if (select.value === option.value) return true;
+      if (!claimBooleanAnswerClick(root, 'agree-option', 'required agreement dropdown')) return true;
+      select.value = option.value;
+      select.dispatchEvent(new Event('input', { bubbles: true }));
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+      console.log(
+        `[JobRight Auto-Skip] selected required agreement option: ${getChoiceControlText(option).slice(0, 180)}`
+      );
+      return true;
+    }
+
+    const dropdown = [...root.querySelectorAll(
+      '[role="combobox"], button[aria-haspopup="listbox"], [aria-haspopup="listbox"]'
+    )].find(el => isVisibleElement(el) && !el.disabled);
+    if (!dropdown) continue;
+    const currentValue = normalizeText(
+      `${dropdown.value || ''} ${dropdown.textContent || ''} ${dropdown.getAttribute('data-value') || ''}`
+    );
+    if (scoreRequiredAgreementOption(currentValue) > 0) return true;
+    if (!claimBooleanAnswerClick(root, 'open-agreement-dropdown', 'required agreement dropdown')) return true;
+    dropdown.click();
+    setTimeout(() => selectRequiredAgreementFromOpenDropdown(root, dropdown), 150);
+    setTimeout(() => selectRequiredAgreementFromOpenDropdown(root, dropdown), 500);
+    return true;
+  }
+  return false;
+}
+
+function checkRequiredAgreements() {
   const boxes = [...document.querySelectorAll('input[type="checkbox"], [role="checkbox"]')]
     .filter(el => !el.disabled && getVisibleCheckboxClickTarget(el));
 
@@ -1488,6 +1600,7 @@ function checkTermsCheckboxes() {
     box.dispatchEvent(new Event('change', { bubbles: true }));
     console.log('[JobRight Auto-Skip] checked required agreement checkbox');
   }
+  chooseRequiredAgreementDropdowns();
 }
 
 function getVisibleCheckboxClickTarget(box) {
@@ -1536,7 +1649,7 @@ function setNativeChecked(input, checked) {
 
 function scheduleTermsCheckboxCheck() {
   clearTimeout(termsCheckboxTimer);
-  termsCheckboxTimer = setTimeout(checkTermsCheckboxes, 400);
+  termsCheckboxTimer = setTimeout(checkRequiredAgreements, 400);
 }
 
 function isResumeFieldText(value = '') {
@@ -2175,6 +2288,6 @@ setInterval(() => {
 setInterval(chooseNoForSmsOptIn, 2_000);
 setInterval(correctWorkEligibilityAnswers, 2_000);
 setInterval(chooseYesForRelocationQuestions, 2_000);
-setInterval(checkTermsCheckboxes, 2_000);
+setInterval(checkRequiredAgreements, 2_000);
 
 } // end guard
