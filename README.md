@@ -13,5 +13,8 @@ Gmail OTP support, and configurable application handling.
 
 ## Shared-user setup
 
-The Mac installation and candidate-personalization checklist is in
+Start with the illustrated
+[`Sundhar Mac setup PDF`](docs/Sundhar_JobRight_Mac_Guide.pdf).
+
+The detailed text version is in
 [`docs/SUNDHAR_MAC_SETUP.md`](docs/SUNDHAR_MAC_SETUP.md).
