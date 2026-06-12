@@ -930,6 +930,11 @@ function handleAtsTerminalApplicationState(confirmedSuccess = false) {
   return skipped;
 }
 
+function handleAtsTerminalFailureState() {
+  if (!autoAppliedEnabled) return false;
+  return skipActiveApplication('ATS submission failure or application limit');
+}
+
 function watchForStuckApplication() {
   if (!enabled || !isJobrightApplicationRunActive()) {
     stuckJobSignature = '';
@@ -1089,7 +1094,7 @@ function handleJobrightStatusPrompts() {
 
   if (/(limit reached|application limit|couldn['’]?t submit your application|we couldn['’]?t submit|have reached your application limit|already applied to this position|only accept one application for the same role|within a \d+[- ]day window)/.test(text) &&
       now - lastTerminalAppliedAt > 15_000) {
-    if (handleTerminalApplicationState()) lastTerminalAppliedAt = now;
+    if (handleAtsTerminalFailureState()) lastTerminalAppliedAt = now;
   }
 
   if (hasRightPaneApplicationSuccess() && now - lastTerminalAppliedAt > 8_000) {
@@ -2127,9 +2132,12 @@ try {
     } else if (msg.type === 'SEND_JOBRIGHT_SYSTEM_PROMPT') {
       reply({ ok: sendJobrightSystemPrompt(msg.prompt) });
     } else if (msg.type === 'TRIGGER_IVE_APPLIED') {
-      // ATS reached a terminal page. Prefer "I've Applied"; cards that expose
-      // only Skip still need to advance so the queue cannot remain stuck.
-      reply({ ok: handleAtsTerminalApplicationState(!!msg.confirmedSuccess) });
+      // Failed/limited applications must never be marked as applied.
+      reply({
+        ok: msg.confirmedFailure
+          ? handleAtsTerminalFailureState()
+          : handleAtsTerminalApplicationState(!!msg.confirmedSuccess),
+      });
     } else if (msg.type === 'GET_ACTIVE_JOB_CONTEXT') {
       reply({ ok: true, ...getActiveJobContext() });
     }

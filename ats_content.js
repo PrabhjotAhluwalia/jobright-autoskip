@@ -54,6 +54,17 @@ const ATS_CONFIRMED_SUCCESS_PATTERNS = [
   /\bsubmission successful\b/i,
 ];
 
+const ATS_CONFIRMED_FAILURE_PATTERNS = [
+  /\bwe couldn['’]?t submit your application\b/i,
+  /\bcould not submit your application\b/i,
+  /\bapplication (?:was |is )?not submitted\b/i,
+  /\bapplication (?:submission )?(?:failed|unsuccessful)\b/i,
+  /\b(?:reached|reached your|have reached|application) (?:the )?application limit\b/i,
+  /\blimit (?:the number of |your )?applications\b/i,
+  /\balready applied to this position\b/i,
+  /\bonly accept one application for the same role\b/i,
+];
+
 const OTP_FIELD_PATTERN = /\b(otp|one[-\s]?time\s*(code|password)?|verification\s*code|verify\s*code|security\s*code|passcode)\b/i;
 
 const AUTO_POLL_INTERVAL_MS  = 4_000;   // poll every 4s
@@ -778,19 +789,28 @@ function getChoiceControlText(control) {
 
 function getQuestionPromptText(root) {
   if (!root) return '';
-  const clone = root.cloneNode(true);
+  const chunks = [];
+  const skipSelector =
+    'input, select, option, button, [role="radio"], [role="option"], [role="button"], script, style';
 
-  clone.querySelectorAll(
-    'input, select, option, button, [role="radio"], [role="option"], [role="button"]'
-  ).forEach(el => el.remove());
-  clone.querySelectorAll('label').forEach(label => {
-    const text = normalizeText(label.textContent || '');
-    if (/^(yes|no|true|false|prefer not|i['’]?m not sure)\b/.test(text)) {
-      label.remove();
+  const visit = node => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      const text = normalizeText(node.nodeValue || '');
+      if (text) chunks.push(text);
+      return;
     }
-  });
+    if (node.nodeType !== Node.ELEMENT_NODE) return;
+    const el = node;
+    if (el.matches?.(skipSelector)) return;
+    if (el.matches?.('label')) {
+      const labelText = normalizeText(el.textContent || '');
+      if (/^(yes|no|true|false|prefer not|i['’]?m not sure)\b/.test(labelText)) return;
+    }
+    for (const child of el.childNodes) visit(child);
+  };
 
-  return normalizeText(clone.innerText || clone.textContent || '');
+  visit(root);
+  return normalizeText(chunks.join(' '));
 }
 
 function findMinimalYesNoQuestionRoots(predicate) {
@@ -2172,20 +2192,26 @@ function showOTPBanner() {
 function checkForSubmission() {
   if (signalSent || !autoAppliedEnabled) return;
   const text = (document.body?.innerText || document.body?.textContent || '').toLowerCase();
+  const confirmedSuccess = ATS_CONFIRMED_SUCCESS_PATTERNS.some(re => re.test(text));
+  const confirmedFailure = ATS_CONFIRMED_FAILURE_PATTERNS.some(re => re.test(text));
   const configuredMatch = loadTerminalSuccessPhrases().some(phrase => text.includes(phrase));
   if (!configuredMatch &&
       !ATS_SUBMITTED_TEXTS.some(t => text.includes(t)) &&
-      !ATS_SUBMITTED_PATTERNS.some(re => re.test(text))) return;
+      !ATS_SUBMITTED_PATTERNS.some(re => re.test(text)) &&
+      !confirmedFailure) return;
 
   signalSent = true;
   if (pageObserver) { pageObserver.disconnect(); pageObserver = null; }
-  console.log('[JobRight Auto-Skip] ATS submission detected');
+  console.log(confirmedFailure
+    ? '[JobRight Auto-Skip] ATS terminal failure detected'
+    : '[JobRight Auto-Skip] ATS submission detected');
   try {
     chrome.runtime.sendMessage({
       type: 'ATS_SUBMISSION_DETECTED',
       url: location.href,
       origin: location.origin,
-      confirmedSuccess: ATS_CONFIRMED_SUCCESS_PATTERNS.some(re => re.test(text)),
+      confirmedSuccess,
+      confirmedFailure,
     });
   } catch (_) {}
 }

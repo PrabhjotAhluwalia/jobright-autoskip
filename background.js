@@ -326,6 +326,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         atsOrigin: msg.origin,
         atsUrl: msg.url,
         confirmedSuccess: !!msg.confirmedSuccess,
+        confirmedFailure: !!msg.confirmedFailure,
       };
       let attempts = 0;
       const send = async () => {
