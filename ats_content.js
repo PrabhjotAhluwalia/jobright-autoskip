@@ -800,6 +800,43 @@ function findRelocationQuestionRoots() {
     );
 }
 
+function scoreRelocationOptionText(text = '') {
+  const normalized = normalizeText(text);
+  const commitsToRelocate =
+    /\b(?:would|will|can|willing|able|prepared)\b.{0,50}\b(?:relocat\w*|move)\b/.test(normalized);
+  if (!normalized ||
+      /^(select|choose|please select|none|n\/a|not applicable)\b/.test(normalized) ||
+      (!commitsToRelocate &&
+        /\b(?:do not|don['’]?t|cannot|can['’]?t|unable|not willing|decline|no)\b.{0,65}\b(?:relocat\w*|commut\w*|meet|office|onsite|hybrid|requirement)\b/.test(normalized)) ||
+      /\b(?:not within commuting distance|outside commuting distance)\b.{0,100}\b(?:do not|don['’]?t|no plan|without plans?)\b/.test(normalized)) {
+    return -1;
+  }
+
+  let score = 0;
+  if (/^(yes|true)\b/.test(normalized)) score += 100;
+  if (/\b(?:would|will|can|willing|able|available|agree|prepared|plan)\b/.test(normalized)) score += 35;
+  if (/\b(?:meet|satisfy|fulfill)\b.{0,35}\b(?:in[- ]office|office|onsite|hybrid|commut|requirement)\b/.test(normalized)) score += 45;
+  if (/\b(?:relocat(?:e|ing|ion)|move)\b/.test(normalized)) score += 55;
+  if (/\b(?:before|by)\b.{0,35}\b(?:start date|starting|start|first day)\b/.test(normalized)) score += 35;
+  if (/\b(?:commuting distance|commute|in[- ]office|office|onsite|hybrid)\b/.test(normalized)) score += 25;
+  if (/\bcurrently (?:live|living|located|reside)\b/.test(normalized) &&
+      /\b(?:commuting distance|local|near|nearby)\b/.test(normalized)) {
+    score += 30;
+  }
+  return score;
+}
+
+function findBestRelocationOption(options) {
+  return options
+    .map((option, index) => ({
+      option,
+      index,
+      score: scoreRelocationOptionText(getChoiceControlText(option)),
+    }))
+    .filter(candidate => candidate.score > 0)
+    .sort((a, b) => b.score - a.score || a.index - b.index)[0]?.option || null;
+}
+
 function selectYesFromOpenDropdown(root, dropdown) {
   const promptText = getQuestionPromptText(root);
   const controlledId = dropdown?.getAttribute('aria-controls') ||
@@ -811,15 +848,15 @@ function selectYesFromOpenDropdown(root, dropdown) {
   const options = [...optionRoot.querySelectorAll(
     '[role="option"], [role="menuitem"], li, [data-value]'
   )]
-    .filter(el => isVisibleElement(el) && !el.disabled)
-    .filter(el => /^(yes|true)\b/.test(normalizeText(
-      `${el.textContent || ''} ${el.getAttribute?.('aria-label') || ''} ${el.getAttribute?.('data-value') || ''}`
-    )));
-  const option = options[0];
+    .filter(el => isVisibleElement(el) && !el.disabled);
+  const option = findBestRelocationOption(options);
   if (!option) return false;
-  if (!claimBooleanAnswerClick(promptText, 'yes-option', 'relocation dropdown')) return true;
+  if (isChoiceControlSelected(option)) return true;
+  if (!claimBooleanAnswerClick(promptText, 'affirmative-option', 'relocation dropdown')) return true;
   option.click();
-  console.log('[JobRight Auto-Skip] selected Yes for in-office/relocation dropdown');
+  console.log(
+    `[JobRight Auto-Skip] selected affirmative in-office/relocation option: ${getChoiceControlText(option).slice(0, 180)}`
+  );
   return true;
 }
 
@@ -927,17 +964,17 @@ function chooseYesForRelocationQuestions() {
 
     const select = root.querySelector('select');
     if (select) {
-      const yesOption = [...select.options].find(option =>
-        /^(yes|true|willing|able)\b/.test(normalizeText(`${option.textContent || ''} ${option.value || ''}`))
-      );
+      const yesOption = findBestRelocationOption([...select.options]);
       if (yesOption) {
         if (select.value === yesOption.value) continue;
-        if (!claimBooleanAnswerClick(root, 'yes', 'relocation eligibility')) return true;
+        if (!claimBooleanAnswerClick(root, 'affirmative-option', 'relocation eligibility')) return true;
         select.value = yesOption.value;
         select.dispatchEvent(new Event('input', { bubbles: true }));
         select.dispatchEvent(new Event('change', { bubbles: true }));
         relocationAnswerAttempts.set(questionSignature, Date.now());
-        console.log('[JobRight Auto-Skip] selected Yes for relocation/in-person question');
+        console.log(
+          `[JobRight Auto-Skip] selected affirmative relocation/in-person option: ${getChoiceControlText(yesOption).slice(0, 180)}`
+        );
         return true;
       }
     }
@@ -949,8 +986,8 @@ function chooseYesForRelocationQuestions() {
       const value = normalizeText(
         `${dropdown.value || ''} ${dropdown.textContent || ''} ${dropdown.getAttribute('data-value') || ''}`
       );
-      if (/^(yes|true)\b/.test(value)) continue;
-      if (!claimBooleanAnswerClick(root, 'open-yes-dropdown', 'relocation eligibility')) return true;
+      if (scoreRelocationOptionText(value) > 0 && isChoiceControlSelected(dropdown)) continue;
+      if (!claimBooleanAnswerClick(root, 'open-affirmative-dropdown', 'relocation eligibility')) return true;
       dropdown.click();
       setTimeout(() => selectYesFromOpenDropdown(root, dropdown), 150);
       setTimeout(() => selectYesFromOpenDropdown(root, dropdown), 500);
@@ -960,15 +997,15 @@ function chooseYesForRelocationQuestions() {
     const customControls = [...root.querySelectorAll(
       '[role="radio"], [role="option"], button, [role="button"], label'
     )].filter(el => isVisibleElement(el) && !el.disabled);
-    const yesControl = customControls.find(el =>
-      /^(yes|willing|able)$/.test(normalizeText(el.textContent || el.getAttribute('aria-label') || ''))
-    );
+    const yesControl = findBestRelocationOption(customControls);
     if (yesControl) {
       if (isChoiceControlSelected(yesControl)) continue;
-      if (!claimBooleanAnswerClick(root, 'yes', 'relocation eligibility')) return true;
+      if (!claimBooleanAnswerClick(root, 'affirmative-option', 'relocation eligibility')) return true;
       yesControl.click();
       relocationAnswerAttempts.set(questionSignature, Date.now());
-      console.log('[JobRight Auto-Skip] selected Yes for relocation/in-person question');
+      console.log(
+        `[JobRight Auto-Skip] selected affirmative relocation/in-person option: ${getChoiceControlText(yesControl).slice(0, 180)}`
+      );
       return true;
     }
   }
