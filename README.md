@@ -10,3 +10,8 @@ Gmail OTP support, and configurable application handling.
 3. Load this directory as an unpacked extension.
 
 `oauth_config.js` is intentionally excluded from Git.
+
+## Shared-user setup
+
+The Mac installation and candidate-personalization checklist is in
+[`docs/SUNDHAR_MAC_SETUP.md`](docs/SUNDHAR_MAC_SETUP.md).
