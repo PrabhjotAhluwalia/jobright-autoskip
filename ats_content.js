@@ -504,15 +504,73 @@ function isEmptyCountryControl(control) {
     /\bselect a country\b/.test(text);
 }
 
-function isUsCountryOption(el) {
-  const text = normalizeText([
+function getCountryOptionText(el) {
+  return normalizeText([
     el.textContent,
     el.value,
     el.getAttribute?.('aria-label'),
     el.getAttribute?.('data-value'),
+    el.getAttribute?.('title'),
   ].filter(Boolean).join(' '));
-  return /^(united states(?: of america)?|us|usa|\+1|united states \+1|\+1 united states)$/.test(text) ||
-    (/\bunited states\b/.test(text) && /\+?1\b/.test(text));
+}
+
+function scoreUsCountryOption(el) {
+  const text = getCountryOptionText(el);
+  if (!text ||
+      /^(select|select a country|country|choose country|please select)$/.test(text)) {
+    return -1;
+  }
+
+  const hasUnitedStates = /\bunited states(?: of america)?\b/.test(text);
+  const hasUsa = /(?:^|[\s(,/-])u\.?s\.?a\.?(?:$|[\s),/+:-])/.test(text);
+  const hasUs = /(?:^|[\s(,/-])u\.?s\.?(?:$|[\s),/+:-])/.test(text);
+  const hasAmerica = /\b(?:america|american)\b/.test(text);
+  const hasUsFlag = text.includes('🇺🇸');
+  const hasPlusOne = /(?:^|[\s(])\+?1(?:$|[\s)])/.test(text);
+  const namesAnotherCountry =
+    /\b(?:canada|dominican republic|puerto rico|jamaica|bahamas|barbados|bermuda|grenada|guam|haiti|trinidad|tobago|virgin islands)\b/.test(text);
+
+  if (namesAnotherCountry) return -1;
+
+  let score = 0;
+  if (hasUnitedStates) score += 120;
+  if (hasUsa) score += 110;
+  if (hasUs) score += 100;
+  if (hasUsFlag) score += 100;
+  if (hasAmerica) score += 70;
+  if (hasPlusOne) score += 35;
+  if (/^(?:\+?1|🇺🇸\s*\+?1)$/.test(text)) score += 45;
+  return score;
+}
+
+function findBestUsCountryOption(options) {
+  return options
+    .map((option, index) => ({ option, index, score: scoreUsCountryOption(option) }))
+    .filter(candidate => candidate.score > 0)
+    .sort((a, b) => b.score - a.score || a.index - b.index)[0]?.option || null;
+}
+
+function selectUsCountryFromOpenDropdown(control) {
+  const controlledId = control?.getAttribute('aria-controls') ||
+    control?.getAttribute('aria-owns');
+  const controlledRoot = controlledId ? document.getElementById(controlledId) : null;
+  const optionRoot = controlledRoot && isVisibleElement(controlledRoot)
+    ? controlledRoot
+    : document;
+  const options = [...optionRoot.querySelectorAll(
+    '[role="option"], [role="menuitem"], li, button, [data-value]'
+  )].filter(el =>
+    el !== control &&
+    isVisibleElement(el) &&
+    !el.disabled &&
+    !el.closest?.('[aria-hidden="true"]')
+  );
+  const option = findBestUsCountryOption(options);
+  if (!option) return false;
+  if (isChoiceControlSelected(option)) return true;
+  option.click();
+  console.log(`[JobRight Auto-Skip] selected US country option: ${getCountryOptionText(option).slice(0, 120)}`);
+  return true;
 }
 
 function ensureUsCountryCode() {
@@ -536,22 +594,19 @@ function ensureUsCountryCode() {
 
   for (const control of countryControls) {
     if (control instanceof HTMLSelectElement) {
-      const option = [...control.options].find(isUsCountryOption);
+      const option = findBestUsCountryOption([...control.options]);
       if (!option) continue;
       control.value = option.value;
       control.dispatchEvent(new Event('input', { bubbles: true }));
       control.dispatchEvent(new Event('change', { bubbles: true }));
-      console.log('[JobRight Auto-Skip] selected United States for country field');
+      console.log(`[JobRight Auto-Skip] selected US country option: ${getCountryOptionText(option).slice(0, 120)}`);
       return true;
     }
 
     control.click();
-    const option = [...document.querySelectorAll('[role="option"], li, button, [data-value]')]
-      .filter(el => isVisibleElement(el) && !el.disabled)
-      .find(isUsCountryOption);
-    if (!option) { control.click(); continue; } // close dropdown if no match
-    option.click();
-    console.log('[JobRight Auto-Skip] selected United States for country field');
+    setTimeout(() => selectUsCountryFromOpenDropdown(control), 100);
+    setTimeout(() => selectUsCountryFromOpenDropdown(control), 350);
+    setTimeout(() => selectUsCountryFromOpenDropdown(control), 800);
     return true;
   }
   return false;
