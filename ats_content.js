@@ -90,6 +90,7 @@ const PROFILE_CORRECTIONS = {
   currentCompany: 'Georgia Tech',
   email: 'ahluwaliaps@gmail.com',
   phone: '4044646692',
+  locationCity: 'Atlanta, Georgia, United States',
   linkedin: 'https://www.linkedin.com/in/prabhjot-ahluwalia/',
   referralName: 'NA - I applied directly',
 };
@@ -598,6 +599,7 @@ function scheduleProfileCorrection(delay = 120) {
   profileCorrectionTimer = setTimeout(() => {
     correctStaleProfileFields();
     ensureUsCountryCode();
+    ensureAtlantaLocation();
   }, delay);
 }
 
@@ -745,6 +747,89 @@ function ensureUsCountryCode() {
   return false;
 }
 
+function isLocationCityControl(control) {
+  const hints = normalizeText([
+    control.id,
+    control.name,
+    control.placeholder,
+    control.getAttribute?.('aria-label'),
+    control.getAttribute?.('aria-labelledby'),
+    labelTextForControl(control),
+  ].filter(Boolean).join(' '));
+  return /\blocation\s*\(?city\)?\b/.test(hints) ||
+    /\bcity\s*(?:and|\/|,)?\s*(?:state|location)\b/.test(hints);
+}
+
+function isExactAtlantaLocation(text = '') {
+  const normalized = normalizeText(text);
+  const target = normalizeText(PROFILE_CORRECTIONS.locationCity);
+  if (normalized === target) return true;
+  return normalized.startsWith(target) &&
+    normalized.split(target).join('').trim() === '';
+}
+
+function selectAtlantaFromOpenDropdown(control) {
+  const controlledId = control?.getAttribute('aria-controls') ||
+    control?.getAttribute('aria-owns');
+  const controlledRoot = controlledId ? document.getElementById(controlledId) : null;
+  const optionRoot = controlledRoot && isVisibleElement(controlledRoot)
+    ? controlledRoot
+    : document;
+  const option = [...optionRoot.querySelectorAll(
+    '[role="option"], [role="menuitem"], li, button, [data-value]'
+  )].find(el =>
+    el !== control &&
+    isVisibleElement(el) &&
+    !el.disabled &&
+    isExactAtlantaLocation(getChoiceControlText(el))
+  );
+  if (!option) return false;
+  if (!isChoiceControlSelected(option)) option.click();
+  console.log('[JobRight Auto-Skip] selected Atlanta, Georgia, United States');
+  return true;
+}
+
+function ensureAtlantaLocation() {
+  if (!profileCorrectionReady || !profileCorrectionEnabled) return false;
+  const controls = [...document.querySelectorAll(
+    'input:not([type="hidden"]):not([type="file"]), textarea, select, [role="combobox"], [aria-haspopup="listbox"]'
+  )]
+    .filter(el => isVisibleElement(el) && !el.disabled && isLocationCityControl(el))
+    .sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top);
+
+  for (const control of controls) {
+    const current = String(control.value || control.textContent || '').trim();
+    if (isExactAtlantaLocation(current)) return true;
+
+    if (control instanceof HTMLSelectElement) {
+      const option = [...control.options].find(item =>
+        isExactAtlantaLocation(`${item.textContent || ''} ${item.value || ''}`)
+      );
+      if (!option) continue;
+      control.value = option.value;
+      dispatchInputEvents(control);
+      console.log('[JobRight Auto-Skip] selected Atlanta, Georgia, United States');
+      return true;
+    }
+
+    if (selectAtlantaFromOpenDropdown(control)) return true;
+    const isAutocomplete = control.getAttribute?.('role') === 'combobox' ||
+      !!control.getAttribute?.('aria-autocomplete') ||
+      !!control.getAttribute?.('aria-controls');
+    setNativeValue(
+      control,
+      isAutocomplete ? 'Atlanta' : PROFILE_CORRECTIONS.locationCity,
+    );
+    dispatchInputEvents(control);
+    control.click?.();
+    setTimeout(() => selectAtlantaFromOpenDropdown(control), 150);
+    setTimeout(() => selectAtlantaFromOpenDropdown(control), 500);
+    setTimeout(() => selectAtlantaFromOpenDropdown(control), 900);
+    return true;
+  }
+  return false;
+}
+
 function isRecruitingCommunicationsQuestion(text = '') {
   const normalized = normalizeText(text);
   const channel =
@@ -773,6 +858,27 @@ function isWorkAuthorizationQuestion(text = '') {
   if (isSponsorshipQuestion(normalized)) return false;
   return /\b(authori[sz]ed|authorization|legally eligible|legal right)\b/.test(normalized) &&
     /\b(work|employment|united states|u\.?s\.?|country)\b/.test(normalized);
+}
+
+function isAccuracyAffirmationQuestion(text = '') {
+  const normalized = normalizeText(text);
+  const accuracy =
+    /\b(?:responses?|information|statements?|answers?|application)\b/.test(normalized) &&
+    /\b(?:accurate|truthful|true|complete|correct)\b/.test(normalized);
+  const consequence =
+    /\b(?:falsification|false information|misrepresentation)\b/.test(normalized) &&
+    /\b(?:disqualification|withdrawal|termination|result in|may result)\b/.test(normalized);
+  const affirmation =
+    /\b(?:i affirm|i certify|i acknowledge|i understand|i agree)\b/.test(normalized);
+  return affirmation && (accuracy || consequence);
+}
+
+function chooseYesForAccuracyAffirmations() {
+  return chooseBooleanAnswerForQuestion(
+    isAccuracyAffirmationQuestion,
+    'yes',
+    'application accuracy affirmation',
+  );
 }
 
 function claimBooleanAnswerClick(root, desiredAnswer, ruleName) {
@@ -1859,7 +1965,7 @@ function labelTextForControl(el) {
 function isRequiredAgreementQuestion(root) {
   const rawText = root?.innerText || root?.textContent || '';
   const text = normalizeText(rawText);
-  const agreement = /\b(?:agree|agreement|consent|acknowledge|understand|certify|confirm|terms|privacy|by checking this box)\b/.test(text);
+  const agreement = /\b(?:affirm|agree|agreement|consent|acknowledge|understand|certify|confirm|accurate|truthful|falsification|terms|privacy|by checking this box)\b/.test(text);
   const mandatory = rawText.includes('*') ||
     /\b(?:required|this field is required|must|please accept|to proceed)\b/.test(text) ||
     !!root?.querySelector?.('[required], [aria-required="true"]');
@@ -1875,6 +1981,8 @@ function scoreRequiredAgreementOption(text = '') {
   }
 
   let score = 0;
+  if (/^yes\b/.test(normalized)) score += 70;
+  if (/\baffirm\b/.test(normalized)) score += 55;
   if (/\bunderstand\b/.test(normalized)) score += 40;
   if (/\bagree\b/.test(normalized)) score += 60;
   if (/\b(?:acknowledge|accept|consent|certify|confirm)\b/.test(normalized)) score += 45;
@@ -1976,7 +2084,7 @@ function checkRequiredAgreements() {
     const checked = box.checked || box.getAttribute('aria-checked') === 'true';
     const rawText = checkboxContextText(box);
     const text = normalizeText(rawText);
-    const consentish = /\b(i agree|agree to|terms and conditions|terms & conditions|terms of use|terms of service|accept the terms|privacy polic(?:y|ies)|privacy notice|confirm|acknowledge|certify|consent to|by checking this box)\b/.test(text);
+    const consentish = /\b(i affirm|i agree|agree to|accurate|truthful|falsification|terms and conditions|terms & conditions|terms of use|terms of service|accept the terms|privacy polic(?:y|ies)|privacy notice|confirm|acknowledge|certify|consent to|by checking this box)\b/.test(text);
     const mandatory = /\b(required|this field is required|must|please accept|to proceed|proceed)\b/.test(text) || rawText.includes('*');
     if (!consentish || !mandatory) continue;
     if (/\bconsent to\b/.test(text) && !/\b(collect|store|process|processing|demographic|terms|privacy|proceed)\b/.test(text)) continue;
@@ -2600,9 +2708,19 @@ function showOTPBanner() {
 function checkForSubmission() {
   if (!autoAppliedEnabled) return;
   const text = (document.body?.innerText || document.body?.textContent || '').toLowerCase();
-  const confirmedSuccess = ATS_CONFIRMED_SUCCESS_PATTERNS.some(re => re.test(text));
+  const confirmationUrl = /\/confirmation(?:[/?#]|$)/i.test(location.pathname) ||
+    /[?&](?:submitted|success|confirmation)=/i.test(location.search);
+  const visibleSubmitControl = findSubmitButton();
+  // Greenhouse and some other ATS pages embed their future confirmation copy
+  // in hydration data or hidden DOM while the application form is still open.
+  // Do not treat that text as success until the form's visible Submit control
+  // is gone or the URL itself is a confirmation route.
+  const terminalSuccessSurface = confirmationUrl || !visibleSubmitControl;
+  const confirmedSuccess = terminalSuccessSurface &&
+    ATS_CONFIRMED_SUCCESS_PATTERNS.some(re => re.test(text));
   const confirmedFailure = ATS_CONFIRMED_FAILURE_PATTERNS.some(re => re.test(text));
-  const configuredMatch = loadTerminalSuccessPhrases().some(phrase => text.includes(phrase));
+  const configuredMatch = terminalSuccessSurface &&
+    loadTerminalSuccessPhrases().some(phrase => text.includes(phrase));
   if (!confirmedSuccess && !confirmedFailure && !configuredMatch) return;
   if (Date.now() - lastSubmissionSignalAt < 1_500) return;
 
@@ -2665,6 +2783,7 @@ let pageObserver = new MutationObserver(() => {
   scheduleRecruitingCommunicationsOptIn();
   scheduleWorkEligibilityAnswers();
   scheduleRelocationAnswer();
+  chooseYesForAccuracyAffirmations();
   chooseNoForPreviousEmployeeQuestions();
   scheduleValidationRetry();
   scheduleTermsCheckboxCheck();
@@ -2696,6 +2815,7 @@ if (document.readyState === 'complete' || document.readyState === 'interactive')
   scheduleRecruitingCommunicationsOptIn(0);
   scheduleWorkEligibilityAnswers(0);
   scheduleRelocationAnswer(0);
+  chooseYesForAccuracyAffirmations();
   chooseNoForPreviousEmployeeQuestions();
   scheduleValidationRetry();
   scheduleTermsCheckboxCheck();
@@ -2711,6 +2831,7 @@ if (document.readyState === 'complete' || document.readyState === 'interactive')
     scheduleRecruitingCommunicationsOptIn(0);
     scheduleWorkEligibilityAnswers(0);
     scheduleRelocationAnswer(0);
+    chooseYesForAccuracyAffirmations();
     chooseNoForPreviousEmployeeQuestions();
     scheduleValidationRetry();
     scheduleTermsCheckboxCheck();
@@ -2776,6 +2897,7 @@ setInterval(() => {
     scheduleRecruitingCommunicationsOptIn(0);
     scheduleWorkEligibilityAnswers(0);
     scheduleRelocationAnswer(0);
+    chooseYesForAccuracyAffirmations();
     chooseNoForPreviousEmployeeQuestions();
     scheduleValidationRetry();
     scheduleTermsCheckboxCheck();
@@ -2789,10 +2911,12 @@ setInterval(() => {
 setInterval(() => {
   correctStaleProfileFields();
   ensureUsCountryCode();
+  ensureAtlantaLocation();
 }, 2_000);
 setInterval(chooseYesForRecruitingCommunications, 2_000);
 setInterval(correctWorkEligibilityAnswers, 2_000);
 setInterval(chooseYesForRelocationQuestions, 2_000);
+setInterval(chooseYesForAccuracyAffirmations, 2_000);
 setInterval(chooseNoForPreviousEmployeeQuestions, 2_000);
 setInterval(checkRequiredAgreements, 2_000);
 setInterval(checkForSubmission, 1_500);

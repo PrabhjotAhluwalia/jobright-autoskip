@@ -390,6 +390,31 @@ async function captureJobrightTabScreenshot(tab, context = {}) {
 
 // ATS submission → JobRight "I've Applied" broker
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+  if (msg.type === 'STUCK_JOB_WARNING') {
+    const company = sanitizeScreenshotPart(msg.context?.company || '');
+    const title = sanitizeScreenshotPart(msg.context?.title || '');
+    const secondsRemaining = Math.max(1, Number(msg.secondsRemaining) || 30);
+    chrome.notifications.create(
+      `jobright-stuck-${_sender?.tab?.id || 'active'}`,
+      {
+        type: 'basic',
+        iconUrl: 'icons/icon128.png',
+        title: 'JobRight application needs attention',
+        message: [
+          [title, company].filter(Boolean).join(' at '),
+          `About ${secondsRemaining} seconds remain before screenshot and skip.`,
+        ].filter(Boolean).join('\n'),
+        priority: 2,
+        requireInteraction: false,
+      },
+      () => sendResponse({
+        ok: !chrome.runtime.lastError,
+        error: chrome.runtime.lastError?.message || '',
+      }),
+    );
+    return true;
+  }
+
   if (msg.type === 'CAPTURE_STUCK_JOB_SCREENSHOT') {
     captureJobrightTabScreenshot(_sender?.tab, msg.context || {})
       .then(result => sendResponse({ ok: true, ...result }))

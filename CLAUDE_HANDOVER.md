@@ -8,9 +8,10 @@ This repository contains a Manifest V3 Chromium extension that coordinates
 JobRight queue selection, ATS form completion, Gmail OTP retrieval, application
 submission detection, stuck-job screenshots, and automatic skip/advance logic.
 
-The repository is public. Never commit live OAuth client secrets, access tokens,
-refresh tokens, passwords, browser profiles, cookies, one-time codes, or GitHub
-credentials.
+The repository is private as of June 12, 2026. Still never commit live OAuth
+client secrets, access tokens, refresh tokens, passwords, browser profiles,
+cookies, one-time codes, or GitHub credentials. Private Git history is not a
+credential vault and can later be shared, cloned, or exposed.
 
 ## Current Repository State
 
@@ -26,6 +27,8 @@ the previous `main` commit. They include:
 - Configurable terminal success phrases and stronger `I've Applied` handling.
 - Lever-specific protection and one-time `Apply for this job` handling.
 - A 100-second stuck-job watcher that captures before skipping.
+- A one-time native notification at 70 seconds so the user has roughly 30
+  seconds to intervene before capture and skip.
 - macOS and Windows screenshot-helper support.
 - Auto-queue and blocklist changes.
 - Navjeet setup documents replacing the legacy setup documents.
@@ -121,9 +124,14 @@ entry. The surgical fix should:
 
 - Start the 100-second timer only after the active job reaches an application
   form or action-required state.
+- At 70 seconds without progress, show one native browser notification for the
+  active job. Its sound follows the operating system and browser notification
+  settings.
 - At timeout, capture first and wait for a successful save response.
 - Skip only after capture/save completion or a clearly handled fallback.
 - Do not save timeout screenshots for jobs skipped for another reason.
+- Do not learn or add a company to the blocklist when the cancellation was
+  caused by the 100-second timeout path.
 - Keep the active job locked while screenshot capture is pending.
 - The preferred path is `Desktop/SS` through the local helper.
 - Browser-download fallback saves under `Downloads/SS`; Chromium extensions
@@ -133,6 +141,9 @@ entry. The surgical fix should:
 
 - Positive terminal text in the ATS frame should trigger JobRight's
   `I've Applied` and advance to the next job.
+- Some Greenhouse application pages embed their future confirmation message in
+  hydration data before submission. Success text must not count while a visible
+  Submit control remains, unless the URL is already a confirmation route.
 - Built-in and user-configured success phrases are both used.
 - Examples include `Thank you for applying`, `application received`,
   `successfully submitted`, and equivalent configured phrases.
@@ -160,8 +171,11 @@ entry. The surgical fix should:
   `Yes`, including free-text fields.
 - Recruiting, email, SMS, or marketing communications: `Yes`.
 - Acknowledgment/consent: prefer `I agree`, then `Yes`.
+- Accuracy, truthful-information, and falsification acknowledgments: `Yes`.
 - FINRA registration questions: `NA` when available.
 - Country and phone country code: `United States +1`.
+- Location (City): `Atlanta, Georgia, United States`, selecting the exact
+  autocomplete option when present.
 - Source/how heard: `LinkedIn`.
 
 ## Fallback File Rules
@@ -252,7 +266,7 @@ git status --short
 ## Git and Safety Notes
 
 - The remote is `PrabhjotAhluwalia/jobright-autoskip`.
-- The GitHub repository is public as of June 12, 2026.
+- The GitHub repository is private as of June 12, 2026.
 - Do not commit `oauth_config.js`, logs, `.DS_Store`, browser profiles, or local
   token stores.
 - The generated Navjeet PDF and DOCX are intended repository assets.

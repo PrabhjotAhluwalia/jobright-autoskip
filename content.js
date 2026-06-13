@@ -56,6 +56,7 @@ let stuckJobProgressSignature = '';
 let stuckJobLastProgressAt = 0;
 let stuckJobSkipSignature = '';
 let stuckJobScreenshotSignature = '';
+let stuckJobWarningSignature = '';
 let pendingStuckScreenshotSignature = '';
 let lastStuckScreenshotAttemptAt = 0;
 let submissionCountSincePrompt = 0;
@@ -93,6 +94,7 @@ let customTerminalSuccessPhrases = [];
 let terminalSuccessPhraseLoading = false;
 const managedIntervalIds = [];
 const autoQueueAddedKeys = new Set();
+const timeoutSkippedCompanies = new Map();
 const INVALID_BLOCKLIST_COMPANIES = new Set([
   'application',
   'applications',
@@ -114,8 +116,10 @@ globalThis.__jobrightContentPing = () => {
 
 const MORE_JOBS_QUESTION = 'all jobs application have been completed. do you want me to pull more jobs to apply now ?';
 const JOBRIGHT_QUEUE_LIMIT = 40;
+const JOB_STUCK_WARNING_MS = 70 * 1000;
 const JOB_STUCK_TIMEOUT_MS = 100 * 1000;
 const STUCK_SCREENSHOT_RETRY_MS = 10 * 1000;
+const TIMEOUT_BLOCKLIST_SUPPRESSION_MS = 5 * 60 * 1000;
 const SYSTEM_PROMPT_SUBMISSION_INTERVAL = 10;
 const SUBMISSION_COUNT_STORAGE_KEY = 'jobrightSubmissionCountSincePrompt';
 const SUBMISSION_SEEN_STORAGE_KEY = 'jobrightSubmissionSeenCounts';
@@ -398,6 +402,14 @@ function captureCancelledApplicationCompanies() {
       .trim();
     const signature = normalizeText(`${title}@${company}`);
     if (!isValidBlocklistCompany(company) || processedCancellationSignatures.has(signature)) continue;
+    const companyKey = canonicalCompany(company);
+    const suppressedUntil = timeoutSkippedCompanies.get(companyKey) || 0;
+    if (suppressedUntil > Date.now()) {
+      processedCancellationSignatures.add(signature);
+      console.log(`[JobRight Auto-Skip] ignored timeout cancellation for blocklist: ${company}`);
+      continue;
+    }
+    if (suppressedUntil) timeoutSkippedCompanies.delete(companyKey);
     processedCancellationSignatures.add(signature);
     addToBlocklist(company);
     console.log(`[JobRight Auto-Skip] learned cancelled application company: ${company}`);
@@ -989,7 +1001,10 @@ function findActiveApplicationCardSkip() {
   return card ? findSkipControlInContainer(card) : null;
 }
 
-function skipActiveApplication(reason, { afterScreenshot = false } = {}) {
+function skipActiveApplication(
+  reason,
+  { afterScreenshot = false, suppressBlocklistLearning = false } = {},
+) {
   const snapshot = getActiveApplicationSnapshot();
   if (!afterScreenshot &&
       snapshot?.signature &&
@@ -1003,6 +1018,15 @@ function skipActiveApplication(reason, { afterScreenshot = false } = {}) {
   }
   const skip = snapshot?.card ? findSkipControlInContainer(snapshot.card) : null;
   if (!skip) return false;
+  if (suppressBlocklistLearning && snapshot?.context?.company) {
+    timeoutSkippedCompanies.set(
+      canonicalCompany(snapshot.context.company),
+      Date.now() + TIMEOUT_BLOCKLIST_SUPPRESSION_MS,
+    );
+    processedCancellationSignatures.add(normalizeText(
+      `${snapshot.context.title || ''}@${snapshot.context.company}`,
+    ));
+  }
   clickLikeUser(skip);
   stuckJobSkipSignature = snapshot.signature;
   console.log(`[JobRight Auto-Skip] skipped active application (${reason})`);
@@ -1053,7 +1077,7 @@ function requestStuckJobScreenshot(snapshot, skipAfterCapture = true) {
         }
         if (skipActiveApplication(
           'no progress for 100 seconds after screenshot',
-          { afterScreenshot: true },
+          { afterScreenshot: true, suppressBlocklistLearning: true },
         )) {
           stuckJobSkipSignature = snapshot.signature;
         }
@@ -1108,6 +1132,7 @@ function watchForStuckApplication() {
     stuckJobLastProgressAt = 0;
     stuckJobSkipSignature = '';
     stuckJobScreenshotSignature = '';
+    stuckJobWarningSignature = '';
     pendingStuckScreenshotSignature = '';
     return;
   }
@@ -1119,6 +1144,7 @@ function watchForStuckApplication() {
     stuckJobLastProgressAt = 0;
     stuckJobSkipSignature = '';
     stuckJobScreenshotSignature = '';
+    stuckJobWarningSignature = '';
     pendingStuckScreenshotSignature = '';
     return;
   }
@@ -1132,6 +1158,7 @@ function watchForStuckApplication() {
     stuckJobLastProgressAt = 0;
     stuckJobSkipSignature = '';
     stuckJobScreenshotSignature = '';
+    stuckJobWarningSignature = '';
     pendingStuckScreenshotSignature = '';
     return;
   }
@@ -1152,6 +1179,7 @@ function watchForStuckApplication() {
     stuckJobLastProgressAt = now;
     stuckJobSkipSignature = '';
     stuckJobScreenshotSignature = '';
+    stuckJobWarningSignature = '';
     pendingStuckScreenshotSignature = '';
     return;
   }
@@ -1161,18 +1189,38 @@ function watchForStuckApplication() {
     stuckJobLastProgressAt = now;
     stuckJobSkipSignature = '';
     stuckJobScreenshotSignature = '';
+    stuckJobWarningSignature = '';
     pendingStuckScreenshotSignature = '';
     return;
   }
 
+  const elapsedMs = now - stuckJobLastProgressAt;
+  if (elapsedMs >= JOB_STUCK_WARNING_MS &&
+      stuckJobWarningSignature !== snapshot.signature) {
+    stuckJobWarningSignature = snapshot.signature;
+    safeChrome(() =>
+      chrome.runtime.sendMessage({
+        type: 'STUCK_JOB_WARNING',
+        context: snapshot.context || {},
+        secondsRemaining: Math.max(
+          1,
+          Math.ceil((JOB_STUCK_TIMEOUT_MS - elapsedMs) / 1000),
+        ),
+      }).catch(() => {}),
+    );
+  }
+
   if (stuckJobSkipSignature === snapshot.signature ||
-      now - stuckJobLastProgressAt < JOB_STUCK_TIMEOUT_MS) {
+      elapsedMs < JOB_STUCK_TIMEOUT_MS) {
     return;
   }
 
   if (stuckJobScreenshotSignature === snapshot.signature &&
       snapshot.signature !== leverProtectedJobSignature &&
-      skipActiveApplication('no progress for 100 seconds after screenshot')) {
+      skipActiveApplication(
+        'no progress for 100 seconds after screenshot',
+        { suppressBlocklistLearning: true },
+      )) {
     stuckJobSkipSignature = snapshot.signature;
     return;
   }
@@ -2201,41 +2249,13 @@ function findAnalyzeBubbleCardSkip() {
 // immediately without waiting for the bubble to appear.
 function findBlocklistSkip() {
   if (!blocklistEnabled || blocklist.length === 0) return null;
-
-  // Find all job card skip links currently visible
-  // JobRight's card-level skip is a plain <a> or element with text "Skip"
-  // near the top-right of each card block
-  const candidates = document.querySelectorAll('a, button, [role="button"]');
-
-  for (const candidate of candidates) {
-    const txt = (candidate.textContent || '').trim().toLowerCase();
-    if (txt !== 'skip') continue;
-    if (candidate.offsetParent === null) continue;
-    if (candidate.disabled) continue;
-
-    // Walk up to find the card and extract company name
-    let ancestor = candidate.parentElement;
-    let cardCompany = null;
-    for (let depth = 0; depth < 20 && ancestor; depth++) {
-      const spans = ancestor.querySelectorAll(CONFIG.COMPANY_SELECTOR);
-      for (const span of spans) {
-        if (candidate === span || candidate.contains(span)) continue;
-        const text = (span.textContent || '').trim();
-        if (text.length > 1 && text.length < 60 && !text.includes('\n')) {
-          cardCompany = text;
-          break;
-        }
-      }
-      if (cardCompany) break;
-      ancestor = ancestor.parentElement;
-    }
-
-    if (cardCompany && isBlocklisted(cardCompany)) {
-      return { btn: candidate, label: `blocklist-skip (${cardCompany})`, company: null };
-    }
-  }
-
-  return null;
+  const snapshot = getActiveApplicationSnapshot();
+  const company = snapshot?.context?.company || '';
+  if (!snapshot?.card || !company || !isBlocklisted(company)) return null;
+  const btn = findSkipControlInContainer(snapshot.card);
+  return btn
+    ? { btn, label: `blocklist-skip (${company})`, company: null }
+    : null;
 }
 
 // ─── CORE ─────────────────────────────────────────────────────────────────────
@@ -2253,11 +2273,13 @@ function tryClickSkip() {
 
   let result;
   try {
-    // Priority: autofill-only bubble skip FIRST (active card blocking the queue),
-    // then analyze-site bubble, then blocklist pre-skip on background cards.
-    result = findConfirmBubbleSkip()
-          || findAnalyzeBubbleCardSkip()
-          || findBlocklistSkip();
+    // Once the active job reaches its form/action stage, stale prompt text must
+    // not cancel it. Timeout and ATS terminal paths are handled separately.
+    result = activeSnapshot?.timeoutEligible
+      ? findBlocklistSkip()
+      : findConfirmBubbleSkip()
+        || findAnalyzeBubbleCardSkip()
+        || findBlocklistSkip();
   } catch (err) {
     if (isInvalidated(err)) { shutdown('DOM scan error'); return; }
     return;
