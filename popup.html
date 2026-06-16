@@ -145,6 +145,16 @@
     }
     .add-company-btn:hover { background: #4f46e5; }
 
+    .phrase-input {
+      width: 100%; min-height: 90px; resize: vertical;
+      padding: 7px 8px; border: 1px solid #e5e7eb; border-radius: 6px;
+      font: 11px/1.45 -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      color: #374151; background: #fff; outline: none;
+    }
+    .phrase-input:focus { border-color: #6366f1; }
+    .phrase-actions { display: flex; gap: 6px; margin-top: 7px; }
+    .phrase-status { font-size: 10px; color: #15803d; margin-top: 5px; min-height: 14px; }
+
     .company-item {
       display: flex; align-items: center;
       justify-content: space-between;
@@ -280,6 +290,20 @@
       <div style="font-size:10px;color:#9ca3af;margin-bottom:14px;line-height:1.4;">
         Detects "Application submitted" on Lever, Greenhouse, etc. and clicks automatically.
       </div>
+
+      <div class="section-title">
+        <span>Additional success phrases</span>
+      </div>
+      <textarea id="successPhrasesInput" class="phrase-input"
+        placeholder="One phrase per line&#10;Example: we are delighted to receive your application"></textarea>
+      <div style="font-size:10px;color:#9ca3af;margin-top:5px;line-height:1.4;">
+        Case-insensitive. These are added to the built-in submission phrases.
+      </div>
+      <div class="phrase-actions">
+        <button id="saveSuccessPhrasesBtn" class="add-company-btn">Save phrases</button>
+        <button id="clearSuccessPhrasesBtn" class="reset-btn" style="margin-top:0;">Clear custom</button>
+      </div>
+      <div id="successPhrasesStatus" class="phrase-status"></div>
 
       <!-- ATS identity correction toggle -->
       <div class="divider"></div>

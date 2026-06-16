@@ -9,9 +9,12 @@
     "tabs",
     "scripting",
     "identity",
-    "alarms"
+    "alarms",
+    "downloads",
+    "notifications"
   ],
   "host_permissions": [
+    "<all_urls>",
     "https://jobright.ai/*",
     "https://gmail.googleapis.com/*",
     "https://www.googleapis.com/*",
@@ -93,6 +96,7 @@
     {
       "resources": [
         "assets/Prabhjot_Ahluwalia_PM_Resume_US_Citizen.pdf",
+        "assets/Prabhjot_Ahluwalia_Cover_Letter.pdf",
         "jobright_excluded_job_titles.txt",
         "jobright_excluded_job_title_regexes.txt",
         "jobright_terminal_success_phrases.txt"

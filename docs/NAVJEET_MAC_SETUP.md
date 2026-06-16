@@ -12,7 +12,7 @@ the personalization checklist before allowing JobRight to submit applications.
 ## 1. Accept Access and Download the Repository
 
 1. Create or sign in to the GitHub account associated with
-   `isundhar3@gatech.edu`.
+   the invited Georgia Tech GitHub account.
 2. Accept the private-repository invitation from GitHub.
 3. Open Terminal on the Mac.
 4. Install Apple's command-line tools if Git is unavailable:
@@ -33,7 +33,7 @@ the personalization checklist before allowing JobRight to submit applications.
 Keep personal settings separate from the owner's `main` branch:
 
 ```bash
-git switch -c sundhar/profile
+git switch -c navjeet/profile
 ```
 
 Do not push personal OAuth secrets. The repository already ignores
@@ -199,8 +199,8 @@ Before starting a queue:
 4. Confirm no selected option is toggled off by later scans.
 5. Confirm a successful application is counted once.
 6. Confirm failed or limited applications are not counted as successes.
-7. Confirm the stuck-job timer skips only after 1 minute 20 seconds without
-   visible progress.
+7. Confirm the stuck-job timer saves a screenshot and skips only after 100
+   seconds without visible progress.
 8. Review the generated cover letter for factual accuracy.
 
 Only enable hands-free use after the test application is fully correct.
@@ -210,7 +210,7 @@ Only enable hands-free use after the test application is fully correct.
 To receive repository updates later:
 
 ```bash
-git switch sundhar/profile
+git switch navjeet/profile
 git fetch origin
 git rebase origin/main
 ```
@@ -230,4 +230,3 @@ system prompt, resume, or profile constants with the owner's values.
   that JobRight still displays `Executing`.
 - Resume upload fails: verify the PDF filename in the asset folder,
   `ats_content.js`, and `manifest.json` all match exactly.
-
