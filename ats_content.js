@@ -73,7 +73,7 @@ const AUTO_POLL_MAX_ATTEMPTS = 12;      // 48s total window
 const AUTO_FETCH_COOLDOWN_MS = 15_000;  // don't re-trigger same field within 15s
 const VALIDATION_RETRY_FLAG  = 'atsValidationRetryEnabled';
 const PROFILE_CORRECTION_FLAG = 'atsProfileCorrectionEnabled';
-const VALIDATION_RETRY_MAX   = 1;
+const VALIDATION_RETRY_MAX   = 2;
 const OTP_SECTION_PATTERN    = /\b(a verification code was sent|verification code was sent|code was sent to|enter the 8-character code|confirm you'?re a human|security code required|enter.*security code|enter.*verification code|your verification code)\b/i;
 const OTP_EMAIL_SENT_PATTERN = /a verification code was sent to .{3,80}@.{3,80}\.|verification code was sent to your email|code was sent to your email/i;
 const INVALID_OTP_PATTERN    = /\b(?:otp|code|security code|verification code).{0,100}\b(?:incorrect|invalid|wrong|expired|doesn'?t match|does not match)\b|\b(?:incorrect|invalid|wrong|expired).{0,100}\b(?:otp|code|security code|verification code)\b/i;
@@ -85,14 +85,15 @@ const TERMINAL_SUCCESS_PHRASES_FILE = 'jobright_terminal_success_phrases.txt';
 const CUSTOM_TERMINAL_SUCCESS_PHRASES_KEY = 'customTerminalSuccessPhrases';
 const PROFILE_CORRECTIONS = {
   fullName: 'Prabhjot Singh Ahluwalia',
-  firstName: 'Prabhjot Singh',
-  lastName: 'Ahluwalia',
+  firstName: 'Prabhjot',
+  lastName: 'Singh Ahluwalia',
   currentCompany: 'Georgia Tech',
+  currentTitle: 'Graduate Assistant',
   email: 'ahluwaliaps@gmail.com',
   phone: '4044646692',
   locationCity: 'Atlanta, Georgia, United States',
   linkedin: 'https://www.linkedin.com/in/prabhjot-ahluwalia/',
-  referralName: 'NA - I applied directly',
+  referralName: 'NA',
 };
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -114,6 +115,7 @@ let termsCheckboxTimer     = null;
 let smsOptOutTimer          = null;
 let relocationAnswerTimer   = null;
 let workEligibilityAnswerTimer = null;
+let experienceAnswerTimer   = null;
 let resumeFallbackTimer    = null;
 let resumeFallbackUploaded = false;
 let jobrightResumeMissingAt = 0;
@@ -142,6 +144,9 @@ let lastJobrightRepairSubmitAt = 0;
 let latestJobrightMissingFields = [];
 let latestJobrightMissingFieldsAt = 0;
 let jobrightRepairSubmitTimer = null;
+let atsRepairSubmitTimer = null;
+let lastAtsRepairSubmitSignature = '';
+let lastAtsRepairSubmitAt = 0;
 let terminalSuccessPhraseCache = [];
 let builtInTerminalSuccessPhrases = [];
 let customTerminalSuccessPhrases = [];
@@ -230,6 +235,8 @@ try {
       let nudged = 0;
       correctWorkEligibilityAnswers();
       chooseYesForRelocationQuestions();
+      chooseYesForExperienceQuestions();
+      chooseAgeCategory();
       fields.forEach(field => {
         if (nudgeField(field, null)) nudged++;
       });
@@ -538,6 +545,62 @@ function getProfileFieldHints(el) {
   ].filter(Boolean).join(' ')).replace(/\*/g, '');
 }
 
+function isEmploymentRestrictionQuestion(text = '') {
+  const normalized = normalizeText(text);
+  const restriction =
+    /\b(?:restrict(?:ed|ion|ions)?|conflicts?|non[- ]?compete|non[- ]?solicit(?:ation)?|permission|ability to work|concurrently)\b/.test(normalized);
+  const employmentContext =
+    /\b(?:current|former|previous|other)\s+(?:employer|employment|entity|company)\b/.test(normalized) ||
+    /\b(?:work for|perform (?:any )?job responsibilities|compete with|solicit customers?)\b/.test(normalized);
+  return restriction && employmentContext;
+}
+
+function isFamilyEmploymentQuestion(text = '') {
+  const normalized = normalizeText(text);
+  return /\b(?:family|relative|relatives|friend|related|relationship)\b/.test(normalized) &&
+    /\b(?:employee|employed|employment|work(?:ed|ing)?)\b/.test(normalized);
+}
+
+function isEmployeeReferralQuestion(text = '') {
+  const normalized = normalizeText(text);
+  return /\b(?:how were you referred|referred for (?:this|the) position|were you referred to (?:this|the) position by|(?:if )?you were referred by.{0,80}\b(?:associate|employee|colleague)\b|referred by (?:a |the )?(?:current )?employee|current(?:\s+\w+){0,3}\s+employee.*(?:referral|referred)|(?:referral|referrer).*(?:current )?employee)\b/.test(normalized);
+}
+
+function isReferralNameQuestion(text = '') {
+  const normalized = normalizeText(text);
+  return /\b(?:referral|referrer|referred)\b/.test(normalized) &&
+    /\b(?:name|person|employee|associate|colleague)\b/.test(normalized);
+}
+
+function isPriorApplicationQuestion(text = '') {
+  const normalized = normalizeText(text);
+  return /\b(?:completed|submitted|applied for|application)\b/.test(normalized) &&
+    /\b(?:other|another)\b.{0,80}\b(?:opportunit(?:y|ies)|position|role|application)\b/.test(normalized) &&
+    /\b(?:last|past|previous)\b.{0,40}\b(?:year|month|day)/.test(normalized);
+}
+
+function isBusinessRelationshipDisclosureQuestion(text = '') {
+  const normalized = normalizeText(text);
+  return /\b(?:dealer|partner|supplier|vendor|reseller|distributor)\b/.test(normalized) &&
+    /\b(?:work(?:ed|ing)?|employ(?:ed|ment)?|relationship|affiliat(?:e|ed|ion))\b/.test(normalized) &&
+    /\b(?:company|subsidiar(?:y|ies)|aware|past year|currently)\b/.test(normalized);
+}
+
+function isConditionalEmploymentDetailQuestion(text = '') {
+  const normalized = normalizeText(text);
+  return /\bif\s+["']?no["']?\b.{0,100}\b(?:n\/?a|not applicable)\b/.test(normalized) &&
+    (isFamilyEmploymentQuestion(normalized) || isEmployeeReferralQuestion(normalized));
+}
+
+function isNoAnswerEmploymentQuestion(text = '') {
+  return isEmploymentRestrictionQuestion(text) ||
+    isFamilyEmploymentQuestion(text) ||
+    isEmployeeReferralQuestion(text) ||
+    isPriorApplicationQuestion(text) ||
+    isBusinessRelationshipDisclosureQuestion(text) ||
+    isPreviousEmployeeQuestion(text);
+}
+
 function correctedProfileValue(el) {
   const current = String(el.value || el.textContent || '').trim();
   const hints = getProfileFieldHints(el);
@@ -546,10 +609,20 @@ function correctedProfileValue(el) {
   const staleLinkedin = /linkedin\.com\/in\/pradhan-sharma-a1b98a397/i.test(current);
   const stalePhone = current.replace(/\D/g, '') === '14049006692';
 
-  if (/\b(?:current|present)\s+(?:company|employer|organization|organisation)\b/.test(hints) ||
-      /\bwhat is your current company\b/.test(hints)) {
+  const isCurrentEmployerField =
+    /\b(?:current|present|most recent|latest)\b.{0,40}\b(?:company|employer|organization|organisation)\b/.test(hints) ||
+    /\bwhat is your current company\b/.test(hints);
+  if (isCurrentEmployerField && !isEmploymentRestrictionQuestion(hints)) {
     return PROFILE_CORRECTIONS.currentCompany;
   }
+  if (/\b(?:current|present|most recent|latest)\b.{0,40}\b(?:job )?title\b/.test(hints) ||
+      /\bwhat is your (?:current|most recent) (?:job )?title\b/.test(hints)) {
+    return PROFILE_CORRECTIONS.currentTitle;
+  }
+  if (isConditionalEmploymentDetailQuestion(hints)) return 'N/A';
+  if (isEmployeeReferralQuestion(hints)) return 'No';
+  if (isReferralNameQuestion(hints)) return 'NA';
+  if (isNoAnswerEmploymentQuestion(hints)) return 'No';
   if (/\b(?:referral|referrer)\s*(?:name|full name)\b/.test(hints) ||
       /\bname of (?:your |the )?(?:referral|referrer|person who referred)\b/.test(hints) ||
       /\bwho referred you\b/.test(hints)) {
@@ -559,22 +632,23 @@ function correctedProfileValue(el) {
     return PROFILE_CORRECTIONS.email;
   }
   if (staleLinkedin ||
-      (/\blinkedin\b/.test(hints) && current && current !== PROFILE_CORRECTIONS.linkedin)) {
+      (/\blinkedin\b/.test(hints) && current !== PROFILE_CORRECTIONS.linkedin)) {
     return PROFILE_CORRECTIONS.linkedin;
   }
   if (stalePhone ||
-      (/\b(phone|mobile|telephone|tel)\b/.test(hints) && current &&
+      (/\b(phone|mobile|telephone|tel)\b/.test(hints) &&
        current.replace(/\D/g, '') !== PROFILE_CORRECTIONS.phone)) {
     return PROFILE_CORRECTIONS.phone;
   }
-  if (staleName) {
-    if (/\b(first|given)\s*name\b/.test(hints)) return PROFILE_CORRECTIONS.firstName;
-    if (/\b(last|family|surname)\b/.test(hints)) return PROFILE_CORRECTIONS.lastName;
+  // "Legal First & Last Name" is one full-name field, not a last-name field
+  // that happens to contain the word "first" earlier in its label.
+  if (/\b(?:legal\s+)?(?:first|given)\s*(?:&|and)\s*(?:last|family|surname)\s+name\b/.test(hints) ||
+      /\b(?:full|legal)\s+name\b/.test(hints)) {
     return PROFILE_CORRECTIONS.fullName;
   }
-  if (/\bfull\s*name\b/.test(hints) && current && current !== PROFILE_CORRECTIONS.fullName) {
-    return PROFILE_CORRECTIONS.fullName;
-  }
+  if (/\b(first|given)\s*name\b/.test(hints)) return PROFILE_CORRECTIONS.firstName;
+  if (/\b(?:last|family|surname)\s*name\b/.test(hints)) return PROFILE_CORRECTIONS.lastName;
+  if (staleName || /\b(?:full|legal)?\s*name\b/.test(hints)) return PROFILE_CORRECTIONS.fullName;
   return '';
 }
 
@@ -757,7 +831,10 @@ function isLocationCityControl(control) {
     labelTextForControl(control),
   ].filter(Boolean).join(' '));
   return /\blocation\s*\(?city\)?\b/.test(hints) ||
-    /\bcity\s*(?:and|\/|,)?\s*(?:state|location)\b/.test(hints);
+    /\bcity\s*(?:and|\/|,)?\s*(?:state|location)\b/.test(hints) ||
+    /\b(?:current|present)\s+(?:city|location)\b/.test(hints) ||
+    /\bwhere\s+(?:are|do)\s+you\s+(?:currently\s+)?(?:located|based|live|living|reside|residing)\b/.test(hints) ||
+    /\b(?:where|city)\s+(?:are|is)\s+you\s+(?:located|based)\b/.test(hints);
 }
 
 function isExactAtlantaLocation(text = '') {
@@ -766,6 +843,10 @@ function isExactAtlantaLocation(text = '') {
   if (normalized === target) return true;
   return normalized.startsWith(target) &&
     normalized.split(target).join('').trim() === '';
+}
+
+function isUnitedStatesLocation(text = '') {
+  return /^(?:united states|united states of america|usa|u\.?s\.?a\.?)$/.test(normalizeText(text));
 }
 
 function selectAtlantaFromOpenDropdown(control) {
@@ -789,6 +870,24 @@ function selectAtlantaFromOpenDropdown(control) {
   return true;
 }
 
+function selectAtlantaOrUnitedStatesFromOpenDropdown(control) {
+  if (selectAtlantaFromOpenDropdown(control)) return true;
+  const controlledId = control?.getAttribute('aria-controls') || control?.getAttribute('aria-owns');
+  const controlledRoot = controlledId ? document.getElementById(controlledId) : null;
+  const optionRoot = controlledRoot && isVisibleElement(controlledRoot) ? controlledRoot : document;
+  const fallback = [...optionRoot.querySelectorAll('[role="option"], [role="menuitem"], li, button, [data-value]')]
+    .find(option =>
+      option !== control &&
+      isVisibleElement(option) &&
+      !option.disabled &&
+      isUnitedStatesLocation(getChoiceControlText(option))
+    );
+  if (!fallback) return false;
+  if (!isChoiceControlSelected(fallback)) fallback.click();
+  console.log('[JobRight Auto-Skip] selected United States location fallback');
+  return true;
+}
+
 function ensureAtlantaLocation() {
   if (!profileCorrectionReady || !profileCorrectionEnabled) return false;
   const controls = [...document.querySelectorAll(
@@ -804,6 +903,8 @@ function ensureAtlantaLocation() {
     if (control instanceof HTMLSelectElement) {
       const option = [...control.options].find(item =>
         isExactAtlantaLocation(`${item.textContent || ''} ${item.value || ''}`)
+      ) || [...control.options].find(item =>
+        isUnitedStatesLocation(`${item.textContent || ''} ${item.value || ''}`)
       );
       if (!option) continue;
       control.value = option.value;
@@ -812,7 +913,7 @@ function ensureAtlantaLocation() {
       return true;
     }
 
-    if (selectAtlantaFromOpenDropdown(control)) return true;
+    if (selectAtlantaOrUnitedStatesFromOpenDropdown(control)) return true;
     const isAutocomplete = control.getAttribute?.('role') === 'combobox' ||
       !!control.getAttribute?.('aria-autocomplete') ||
       !!control.getAttribute?.('aria-controls');
@@ -822,9 +923,9 @@ function ensureAtlantaLocation() {
     );
     dispatchInputEvents(control);
     control.click?.();
-    setTimeout(() => selectAtlantaFromOpenDropdown(control), 150);
-    setTimeout(() => selectAtlantaFromOpenDropdown(control), 500);
-    setTimeout(() => selectAtlantaFromOpenDropdown(control), 900);
+    setTimeout(() => selectAtlantaOrUnitedStatesFromOpenDropdown(control), 150);
+    setTimeout(() => selectAtlantaOrUnitedStatesFromOpenDropdown(control), 500);
+    setTimeout(() => selectAtlantaOrUnitedStatesFromOpenDropdown(control), 900);
     return true;
   }
   return false;
@@ -858,6 +959,10 @@ function isWorkAuthorizationQuestion(text = '') {
   if (isSponsorshipQuestion(normalized)) return false;
   return /\b(authori[sz]ed|authorization|legally eligible|legal right)\b/.test(normalized) &&
     /\b(work|employment|united states|u\.?s\.?|country)\b/.test(normalized);
+}
+
+function isCitizenWorkAuthorizationOption(text = '') {
+  return /^(?:u\.?s\.?\s+)?citizen$/.test(normalizeText(text));
 }
 
 function isAccuracyAffirmationQuestion(text = '') {
@@ -1006,11 +1111,17 @@ function isRelocationEligibilityQuestion(text = '') {
   const normalized = normalizeText(text);
   if (isSponsorshipQuestion(normalized) || isWorkAuthorizationQuestion(normalized)) return false;
   const locationAndOfficeAttendance =
-    /\b(?:located|based|live|living|reside)\b.{0,100}\b(?:able|willing|available)\b.{0,100}\b(?:come|report|work)\b.{0,40}\b(?:office|on[- ]site|onsite|in[- ]person)\b/.test(normalized);
+    /\b(?:located|based|live|living|reside)\b.{0,140}\b(?:able|willing|available)\b.{0,120}\b(?:come|report|work|commut(?:e|ing))\b.{0,60}\b(?:office|on[- ]site|onsite|in[- ]person)\b/.test(normalized) ||
+    /\bif not (?:currently )?(?:in|located in|based in|living in|residing in)\b.{0,140}\b(?:willing|able|available)\b.{0,80}\brelocat\w*\b/.test(normalized) ||
+    /\bif you are based in\b.{0,180}\bare you\b.{0,80}\bable\b.{0,80}\bcommut(?:e|ing)\b.{0,80}\boffice\b/.test(normalized);
+  const explicitOfficeSchedule =
+    /\b(?:willing|able|available|can)\b.{0,80}\bwork\b.{0,40}\b(?:in(?:\s+(?:the|our))?\s+office|on[- ]?site|in[- ]?person)\b/.test(normalized);
   const officeProximity =
     /\b(?:live|living|located|based|reside|residing|local)\b.{0,100}\b(?:commut(?:e|able|ing)|driving|travel)\s+(?:distance|range|radius|time)\b/.test(normalized) ||
     /\bwithin\b.{0,60}\b(?:commut(?:e|able|ing)|driving|travel)\s+(?:distance|range|radius|time)\b/.test(normalized) ||
     /\b(?:near|nearby|close to|proximity to|local to|within \d+\s*(?:miles?|minutes?|hours?)(?: of)?)\b.{0,100}\b(?:office|location|site|headquarters|hq|[a-z .'-]+,\s*[a-z]{2})\b/.test(normalized);
+  const directRegionalLocation =
+    /\b(?:are|do)\s+you\s+(?:currently\s+)?(?:located|based|living|residing)\s+(?:within|in|near)\b/.test(normalized);
   const locationOrAttendance =
     /\b(relocat(?:e|ion)|hybrid|in[- ]person|in(?:to)? (?:the |our )?office|office|on[- ]site|onsite|commut(?:e|able|ing)|local to|located in|living in|reside within|metropolitan area)\b/.test(normalized);
   const commitment =
@@ -1019,10 +1130,64 @@ function isRelocationEligibilityQuestion(text = '') {
     /\b(?:schedule|work arrangement|working arrangement|work model)\b/.test(normalized) &&
     /\b(?:on[- ]site|onsite|in[- ]person|in(?:to)? (?:the |our )?office|hybrid|remotely?|remote)\b/.test(normalized) &&
     /\b(?:work for you|works for you|does this|agree|accept|comfortable|able|willing|days? (?:a|per) week)\b/.test(normalized);
-  return locationAndOfficeAttendance ||
+  return directRegionalLocation ||
+    explicitOfficeSchedule ||
+    locationAndOfficeAttendance ||
     officeProximity ||
     onsiteSchedule ||
     (locationOrAttendance && commitment);
+}
+
+function isSanFranciscoLocationQuestion(text = '') {
+  const normalized = normalizeText(text);
+  return /\b(?:are|is)\s+(?:you|the candidate)\s+(?:currently\s+)?(?:located|based|living|residing)\s+in\s+(?:san francisco|sf)\b/.test(normalized) ||
+    /\b(?:san francisco|sf)\b.{0,80}\b(?:located|based|living|residing)\b/.test(normalized);
+}
+
+function isLocalCityQuestion(text = '') {
+  const normalized = normalizeText(text);
+  return /\b(?:do|are)\s+you\s+(?:currently\s+)?(?:live|living|located|based|reside|residing)\s+(?:locally\s+)?(?:in|near|within)\s+[a-z][a-z .,\'-]{1,80}\??$/.test(normalized) ||
+    /\b(?:do|are)\s+you\s+(?:currently\s+)?(?:live|living|located|based|reside|residing)\s+locally\b/.test(normalized) ||
+    /\bare you\s+(?:a\s+)?local(?:\s+candidate)?\s+(?:for|to|in|near)\b/.test(normalized);
+}
+
+function isExplicitOnsiteAvailabilityQuestion(text = '') {
+  const normalized = normalizeText(text);
+  return /\b(?:on[- ]?site|in[- ]?office|in office|in[- ]?person|office|hq|headquarters)\b/.test(normalized) &&
+    /\b(?:able|willing|available|accommodate|commit|work|(?:times?|days?) (?:a|per) week)\b/.test(normalized);
+}
+
+function isExperienceCapabilityQuestion(text = '') {
+  const normalized = normalizeText(text);
+  if (
+    isSponsorshipQuestion(normalized) ||
+    isWorkAuthorizationQuestion(normalized) ||
+    isRelocationEligibilityQuestion(normalized) ||
+    isPreviousEmployeeQuestion(normalized) ||
+    isRecruitingCommunicationsQuestion(normalized) ||
+    isAccuracyAffirmationQuestion(normalized)
+  ) {
+    return false;
+  }
+  if (/\b(?:how many|number of)\b.{0,30}\b(?:years?|months?)\b/.test(normalized)) return false;
+
+  // Treat every direct familiarity prompt as an affirmative capability answer,
+  // regardless of the specific tool, domain, or wording that follows it.
+  if (/\bare you familiar with\b/.test(normalized)) return true;
+
+  const asksHave =
+    /\b(?:do|did|have|has|are|were|can)\s+(?:you|your)\b.{0,80}\b(?:have|had|bring|possess|demonstrate|show)\b/.test(normalized) ||
+    /\b(?:do|did)\s+you\s+have\b/.test(normalized) ||
+    /\bhave\s+you\b.{0,80}\b(?:worked|work|experience|experienced)\b/.test(normalized) ||
+    /\bare you\b.{0,60}\b(?:experienced|proficient|comfortable|familiar|skilled)\b/.test(normalized);
+  const capability =
+    /\b(?:experience|experienced|foundation|proficiency|proficient|familiarity|familiar|knowledge|background|understanding|expertise|skills?|ability|able|comfortable)\b/.test(normalized);
+  const workDomain =
+    /\b(?:sql|tableau|data|analytics?|programming|product|products?|healthcare|claims?|electronic health record|ehr|clinical|patient|ml|ai|machine learning|platform|saas|api|apis|dashboard|reporting|experimentation|a\/b|roadmap|strategy|technical|engineering|customer|growth|plg)\b/.test(normalized);
+
+  // Keep the established domain terms above, but do not require one: a direct
+  // familiarity/experience question should be answered consistently for any industry.
+  return (asksHave || /\bdo you have\b/.test(normalized)) && (capability || workDomain);
 }
 
 function fillYesForRelocationFreeText() {
@@ -1035,7 +1200,11 @@ function fillYesForRelocationFreeText() {
       getProfileFieldHints(control),
       labelTextForControl(control),
     ].join(' '));
-    if (prompt.length > 1200 || !isRelocationEligibilityQuestion(prompt)) continue;
+    if (prompt.length > 1200 ||
+        (!isRelocationEligibilityQuestion(prompt) && !isLocalCityQuestion(prompt))) continue;
+    // Select/search inputs need an actual option click. Typing "Yes" into one
+    // only filters its list and can leave the required value unset.
+    if (isSearchableChoiceControl(control)) continue;
     if (String(control.value || control.textContent || '').trim().toLowerCase() === 'yes') return true;
     setNativeValue(control, 'Yes');
     dispatchInputEvents(control);
@@ -1045,18 +1214,29 @@ function fillYesForRelocationFreeText() {
   return false;
 }
 
+function isSearchableChoiceControl(control) {
+  if (!control) return false;
+  return control.getAttribute?.('role') === 'combobox' ||
+    !!control.getAttribute?.('aria-autocomplete') ||
+    !!control.getAttribute?.('aria-controls') ||
+    !!control.getAttribute?.('aria-owns') ||
+    control.getAttribute?.('aria-haspopup') === 'listbox' ||
+    !!control.closest?.('[role="combobox"], [aria-haspopup="listbox"]');
+}
+
 function isPreviousEmployeeQuestion(text = '') {
   const normalized = normalizeText(text);
   return /\b(?:previous(?:ly)?|formerly?|former)\b.{0,60}\b(?:employee|employed|worked|work)\b/.test(normalized) ||
     /\b(?:employee|employed|worked|work)\b.{0,60}\b(?:previous(?:ly)?|formerly?|before|in the past)\b/.test(normalized) ||
-    /\bhave you (?:ever )?worked (?:for|at|with) (?:us|this company|our company)\b/.test(normalized);
+    /\bhave you (?:ever )?worked (?:for|at|with) (?:us|this company|our company)\b/.test(normalized) ||
+    /\bhave you (?:ever )?held (?:a |any )?position\b.{0,120}\b(?:this company|our company|subsidiar(?:y|ies))\b/.test(normalized);
 }
 
-function chooseNoForPreviousEmployeeQuestions() {
+function chooseNoForEmploymentDisclosureQuestions() {
   if (chooseBooleanAnswerForQuestion(
-    isPreviousEmployeeQuestion,
+    isNoAnswerEmploymentQuestion,
     'no',
-    'previous employee question',
+    'employment disclosure question',
   )) return true;
 
   const roots = [...document.querySelectorAll(
@@ -1067,7 +1247,7 @@ function chooseNoForPreviousEmployeeQuestions() {
       const prompt = getQuestionPromptText(root);
       return prompt.length >= 10 &&
         prompt.length <= 900 &&
-        isPreviousEmployeeQuestion(prompt) &&
+        isNoAnswerEmploymentQuestion(prompt) &&
         !!root.querySelector(
           'select, [role="combobox"], button[aria-haspopup="listbox"], [aria-haspopup="listbox"]'
         );
@@ -1084,11 +1264,11 @@ function chooseNoForPreviousEmployeeQuestions() {
         /^(no|false)\b/.test(normalizeText(`${option.textContent || ''} ${option.value || ''}`))
       );
       if (!noOption || select.value === noOption.value) return !!noOption;
-      if (!claimBooleanAnswerClick(root, 'no', 'previous employee question')) return true;
+      if (!claimBooleanAnswerClick(root, 'no', 'employment disclosure question')) return true;
       select.value = noOption.value;
       select.dispatchEvent(new Event('input', { bubbles: true }));
       select.dispatchEvent(new Event('change', { bubbles: true }));
-      console.log('[JobRight Auto-Skip] selected no for previous employee question');
+      console.log('[JobRight Auto-Skip] selected no for employment disclosure question');
       return true;
     }
 
@@ -1100,7 +1280,7 @@ function chooseNoForPreviousEmployeeQuestions() {
       `${dropdown.value || ''} ${dropdown.textContent || ''} ${dropdown.getAttribute('data-value') || ''}`
     );
     if (/^(no|false)\b/.test(current)) return true;
-    if (!claimBooleanAnswerClick(root, 'open-no-dropdown', 'previous employee question')) return true;
+    if (!claimBooleanAnswerClick(root, 'open-no-dropdown', 'employment disclosure question')) return true;
     dropdown.click();
     const selectNo = () => {
       const noOption = [...document.querySelectorAll(
@@ -1230,7 +1410,7 @@ function findRelocationQuestionRoots() {
           promptText.length > 900 ||
           !isRelocationEligibilityQuestion(promptText)) return false;
       return [...root.querySelectorAll(
-        'select, [role="combobox"], button[aria-haspopup="listbox"], [aria-haspopup="listbox"]'
+        'select, input[role="combobox"], input[aria-autocomplete], input[aria-controls], input[aria-haspopup="listbox"], [role="combobox"], button[aria-haspopup="listbox"], [aria-haspopup="listbox"]'
       )].some(el => isVisibleElement(el) && !el.disabled);
     });
 
@@ -1240,7 +1420,7 @@ function findRelocationQuestionRoots() {
       const promptText = getQuestionPromptText(child);
       return isRelocationEligibilityQuestion(promptText) &&
         !!child.querySelector(
-          'input[type="radio"], select, [role="radio"], [role="combobox"], button[aria-haspopup="listbox"], [aria-haspopup="listbox"]'
+          'input[type="radio"], select, input[role="combobox"], input[aria-autocomplete], input[aria-controls], input[aria-haspopup="listbox"], [role="radio"], [role="combobox"], button[aria-haspopup="listbox"], [aria-haspopup="listbox"]'
         );
     }))
     .sort((a, b) =>
@@ -1255,6 +1435,9 @@ function scoreRelocationOptionText(text = '') {
     /\b(?:would|will|can|willing|able|prepared)\b.{0,50}\b(?:relocat\w*|move)\b/.test(normalized);
   if (!normalized ||
       /^(select|choose|please select|none|n\/a|not applicable)\b/.test(normalized) ||
+      // For office-preference questions, remote is never an acceptable
+      // fallback. Prefer local first, then willingness to relocate.
+      /\b(?:looking|seeking|prefer|want|open)\b.{0,30}\bremote\b|\bremote\s+work\b/.test(normalized) ||
       (!commitsToRelocate &&
         /\b(?:do not|don['’]?t|cannot|can['’]?t|unable|not willing|decline|no)\b.{0,65}\b(?:relocat\w*|commut\w*|meet|office|onsite|hybrid|requirement)\b/.test(normalized)) ||
       /\b(?:not within commuting distance|outside commuting distance)\b.{0,100}\b(?:do not|don['’]?t|no plan|without plans?)\b/.test(normalized)) {
@@ -1263,9 +1446,12 @@ function scoreRelocationOptionText(text = '') {
 
   let score = 0;
   if (/^(yes|true)\b/.test(normalized)) score += 100;
+  if (/\b(?:local|currently\s+(?:live|living|located|reside)|within\s+(?:the\s+)?(?:area|commuting distance)|do not require relocation)\b/.test(normalized)) {
+    score += 140;
+  }
   if (/\b(?:would|will|can|willing|able|available|agree|prepared|plan)\b/.test(normalized)) score += 35;
   if (/\b(?:meet|satisfy|fulfill)\b.{0,35}\b(?:in[- ]office|office|onsite|hybrid|commut|requirement)\b/.test(normalized)) score += 45;
-  if (/\b(?:relocat(?:e|ing|ion)|move)\b/.test(normalized)) score += 55;
+  if (/\b(?:relocat(?:e|ing|ion)|move)\b/.test(normalized)) score += 70;
   if (/\b(?:before|by)\b.{0,35}\b(?:start date|starting|start|first day)\b/.test(normalized)) score += 35;
   if (/\b(?:commuting distance|commute|in[- ]office|office|onsite|hybrid)\b/.test(normalized)) score += 25;
   if (/\bcurrently (?:live|living|located|reside)\b/.test(normalized) &&
@@ -1355,13 +1541,238 @@ function chooseBooleanAnswerForQuestion(predicate, desiredAnswer, logLabel) {
     if (isChoiceControlSelected(control)) return true;
     if (!claimBooleanAnswerClick(root, desiredAnswer, logLabel)) return true;
     control.click();
+    control.dispatchEvent(new Event('input', { bubbles: true }));
+    control.dispatchEvent(new Event('change', { bubbles: true }));
     console.log(`[JobRight Auto-Skip] selected ${desiredAnswer} for ${logLabel}`);
     return true;
   }
   return false;
 }
 
+function findWorkAuthorizationChoiceRoots() {
+  const rootSelector =
+    'fieldset, [role="radiogroup"], [role="group"], [class*="field"], [class*="question"], section, div';
+  const controlSelector =
+    'input[type="radio"], select, [role="radio"], button, [role="button"], label';
+  const hasCitizenOption = root =>
+    [...root.querySelectorAll(controlSelector)]
+      .some(control => isVisibleElement(control) && !control.disabled &&
+        isCitizenWorkAuthorizationOption(getChoiceControlText(control))) ||
+    [...root.querySelectorAll('select option')]
+      .some(option => !option.disabled &&
+        (isCitizenWorkAuthorizationOption(option.textContent || '') ||
+          isCitizenWorkAuthorizationOption(option.value || '')));
+
+  return [...document.querySelectorAll(rootSelector)]
+    .filter(root => {
+      if (!isVisibleElement(root)) return false;
+      const promptText = getQuestionPromptText(root);
+      if (promptText.length < 15 || promptText.length > 900 || !isWorkAuthorizationQuestion(promptText)) {
+        return false;
+      }
+      return hasCitizenOption(root);
+    })
+    .filter(root => ![...root.children].some(child => {
+      if (!isVisibleElement(child)) return false;
+      const promptText = getQuestionPromptText(child);
+      return isWorkAuthorizationQuestion(promptText) && hasCitizenOption(child);
+    }))
+    .sort((a, b) =>
+      normalizeText(a.innerText || a.textContent || '').length -
+      normalizeText(b.innerText || b.textContent || '').length
+    );
+}
+
+function chooseCitizenForWorkAuthorizationQuestions() {
+  for (const root of findWorkAuthorizationChoiceRoots()) {
+    const radios = [...root.querySelectorAll('input[type="radio"]')];
+    const citizenRadio = radios.find(radio => isCitizenWorkAuthorizationOption(getChoiceControlText(radio)));
+    if (citizenRadio) {
+      if (citizenRadio.checked) return true;
+      if (!claimBooleanAnswerClick(root, 'citizen', 'work authorization status')) return true;
+      clickChoiceControl(citizenRadio);
+      console.log('[JobRight Auto-Skip] selected Citizen for work authorization status');
+      return true;
+    }
+
+    const select = root.querySelector('select');
+    if (select) {
+      const citizenOption = [...select.options].find(option =>
+        isCitizenWorkAuthorizationOption(option.textContent || '') ||
+        isCitizenWorkAuthorizationOption(option.value || '')
+      );
+      if (citizenOption) {
+        if (select.value === citizenOption.value) return true;
+        if (!claimBooleanAnswerClick(root, 'citizen', 'work authorization status')) return true;
+        select.value = citizenOption.value;
+        select.dispatchEvent(new Event('input', { bubbles: true }));
+        select.dispatchEvent(new Event('change', { bubbles: true }));
+        console.log('[JobRight Auto-Skip] selected Citizen for work authorization status');
+        return true;
+      }
+    }
+
+    const citizenControl = [...root.querySelectorAll(
+      '[role="radio"], button, [role="button"], label'
+    )]
+      .filter(control => isVisibleElement(control) && !control.disabled)
+      .find(control => isCitizenWorkAuthorizationOption(getChoiceControlText(control)));
+    if (!citizenControl) continue;
+    if (isChoiceControlSelected(citizenControl)) return true;
+    if (!claimBooleanAnswerClick(root, 'citizen', 'work authorization status')) return true;
+    clickChoiceControl(citizenControl);
+    console.log('[JobRight Auto-Skip] selected Citizen for work authorization status');
+    return true;
+  }
+  return false;
+}
+
+function describeValidationControl(control) {
+  if (!control) return null;
+  const input = control instanceof HTMLInputElement
+    ? control
+    : control.querySelector?.('input, textarea, select') || null;
+  const target = input || control;
+  return {
+    tag: target.tagName?.toLowerCase() || '',
+    type: target instanceof HTMLInputElement ? target.type : target.getAttribute?.('role') || '',
+    name: target.getAttribute?.('name') || '',
+    id: target.id || '',
+    value: String(target.value ?? target.getAttribute?.('value') ?? '').slice(0, 240),
+    choiceText: getChoiceControlText(control).slice(0, 240),
+    checked: target instanceof HTMLInputElement ? target.checked : undefined,
+    ariaChecked: target.getAttribute?.('aria-checked') || '',
+    ariaSelected: target.getAttribute?.('aria-selected') || '',
+    ariaPressed: target.getAttribute?.('aria-pressed') || '',
+    disabled: !!target.disabled,
+  };
+}
+
+function clickChoiceControl(control) {
+  if (!control) return false;
+  const radio = control instanceof HTMLInputElement && control.type === 'radio'
+    ? control
+    : control.querySelector?.('input[type="radio"]') ||
+      control.closest?.('label')?.querySelector?.('input[type="radio"]');
+  if (radio) {
+    const label = radio.id
+      ? document.querySelector(`label[for="${CSS.escape(radio.id)}"]`)
+      : radio.closest('label');
+    // A correction response can leave the visual selected state intact while
+    // the ATS form model has lost the radio value. Re-click its real control.
+    (label || radio).click();
+    setNativeChecked(radio, true);
+    radio.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+    radio.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+    return true;
+  }
+  control.click();
+  control.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+  control.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+  return true;
+}
+
+function expectedBooleanAnswerForQuestion(text = '') {
+  if (isSponsorshipQuestion(text) || isNoAnswerEmploymentQuestion(text)) return 'no';
+  if (
+    isSanFranciscoLocationQuestion(text) ||
+    isLocalCityQuestion(text) ||
+    isWorkAuthorizationQuestion(text) ||
+    isRelocationEligibilityQuestion(text) ||
+    isExperienceCapabilityQuestion(text)
+  ) return 'yes';
+  return '';
+}
+
+function reassertBooleanAnswerInContainer(container, fieldText = '') {
+  const promptText = `${fieldText} ${getQuestionPromptText(container)}`;
+  const desiredAnswer = expectedBooleanAnswerForQuestion(promptText);
+  if (!desiredAnswer) {
+    console.log('[JobRight Auto-Skip] validation boolean repair not applicable: no known answer rule', {
+      field: fieldText,
+      prompt: promptText.slice(0, 500),
+    });
+    return false;
+  }
+  const desiredPattern = desiredAnswer === 'yes' ? /^(yes|true)\b/ : /^(no|false)\b/;
+  const controls = [...container.querySelectorAll(
+    'input[type="radio"], [role="radio"], button, [role="button"], label'
+  )].filter(el =>
+    !el.disabled &&
+    (el instanceof HTMLInputElement || isVisibleElement(el))
+  );
+  const desiredControl = controls.find(el => desiredPattern.test(getChoiceControlText(el)));
+  if (!desiredControl) {
+    console.warn('[JobRight Auto-Skip] validation boolean repair skipped: expected choice control not found', {
+      field: fieldText,
+      expectedAnswer: desiredAnswer,
+      availableControls: controls.map(describeValidationControl),
+    });
+    return false;
+  }
+  const before = describeValidationControl(desiredControl);
+  const clickDispatched = clickChoiceControl(desiredControl);
+  const after = describeValidationControl(desiredControl);
+  console.log('[JobRight Auto-Skip] validation boolean repair attempt', {
+    field: fieldText,
+    expectedAnswer: desiredAnswer,
+    clickDispatched,
+    before,
+    after,
+  });
+  return clickDispatched;
+}
+
+function hasBooleanChoiceControls(container) {
+  const labels = [...container.querySelectorAll(
+    'input[type="radio"], [role="radio"], button, [role="button"], label'
+  )]
+    .filter(el => !el.disabled && (el instanceof HTMLInputElement || isVisibleElement(el)))
+    .map(getChoiceControlText);
+  return labels.some(label => /^(yes|true)\b/.test(label)) &&
+    labels.some(label => /^(no|false)\b/.test(label));
+}
+
+function chooseBooleanAnswerNearPrompt(predicate, desiredAnswer, logLabel) {
+  const desiredPattern = desiredAnswer === 'yes' ? /^(yes|true)\b/ : /^(no|false)\b/;
+  const questionNodes = [...document.querySelectorAll('label, legend, p, span, div')]
+    .filter(el => {
+      if (!isVisibleElement(el)) return false;
+      const text = normalizeText(el.innerText || el.textContent || '');
+      return text.length >= 15 && text.length <= 700 && predicate(text);
+    })
+    .sort((a, b) =>
+      normalizeText(a.innerText || a.textContent || '').length -
+      normalizeText(b.innerText || b.textContent || '').length
+    );
+
+  for (const questionNode of questionNodes) {
+    let root = questionNode;
+    for (let depth = 0; depth < 8 && root; depth++, root = root.parentElement) {
+      if (!isVisibleElement(root)) continue;
+      const promptText = getQuestionPromptText(root) || normalizeText(questionNode.textContent || '');
+      if (promptText.length > 900 || !predicate(promptText)) continue;
+      const controls = [...root.querySelectorAll(
+        'input[type="radio"], [role="radio"], button, [role="button"], label'
+      )].filter(el => isVisibleElement(el) && !el.disabled);
+      const desiredControl = controls.find(el => desiredPattern.test(getChoiceControlText(el)));
+      const hasOpposite = controls.some(el =>
+        (desiredAnswer === 'yes' ? /^(no|false)\b/ : /^(yes|true)\b/).test(getChoiceControlText(el))
+      );
+      if (!desiredControl || !hasOpposite) continue;
+      if (isChoiceControlSelected(desiredControl)) return true;
+      if (!claimBooleanAnswerClick(root, desiredAnswer, logLabel)) return true;
+      clickChoiceControl(desiredControl);
+      console.log(`[JobRight Auto-Skip] selected ${desiredAnswer} for ${logLabel}`);
+      return true;
+    }
+  }
+
+  return false;
+}
+
 function correctWorkEligibilityAnswers() {
+  const citizenshipFixed = chooseCitizenForWorkAuthorizationQuestions();
   const authorizationFixed = chooseBooleanAnswerForQuestion(
     isWorkAuthorizationQuestion,
     'yes',
@@ -1372,7 +1783,7 @@ function correctWorkEligibilityAnswers() {
     'no',
     'visa sponsorship question',
   );
-  return sponsorshipFixed || authorizationFixed;
+  return sponsorshipFixed || authorizationFixed || citizenshipFixed;
 }
 
 function scheduleWorkEligibilityAnswers(delay = 100) {
@@ -1381,8 +1792,34 @@ function scheduleWorkEligibilityAnswers(delay = 100) {
 }
 
 function chooseYesForRelocationQuestions() {
+  if (chooseYesForExplicitOnsiteAvailability()) return true;
+  if (chooseBooleanAnswerForQuestion(
+    isSanFranciscoLocationQuestion,
+    'yes',
+    'San Francisco location question',
+  )) return true;
+  if (chooseBooleanAnswerNearPrompt(
+    isSanFranciscoLocationQuestion,
+    'yes',
+    'San Francisco location question',
+  )) return true;
+  if (chooseBooleanAnswerForQuestion(
+    isLocalCityQuestion,
+    'yes',
+    'local-city question',
+  )) return true;
+  if (chooseBooleanAnswerNearPrompt(
+    isLocalCityQuestion,
+    'yes',
+    'local-city question',
+  )) return true;
   if (fillYesForRelocationFreeText()) return true;
   if (chooseBooleanAnswerForQuestion(
+    isRelocationEligibilityQuestion,
+    'yes',
+    'location/in-office availability question',
+  )) return true;
+  if (chooseBooleanAnswerNearPrompt(
     isRelocationEligibilityQuestion,
     'yes',
     'location/in-office availability question',
@@ -1436,7 +1873,7 @@ function chooseYesForRelocationQuestions() {
     }
 
     const dropdown = [...root.querySelectorAll(
-      '[role="combobox"], button[aria-haspopup="listbox"], [aria-haspopup="listbox"]'
+      'input[role="combobox"], input[aria-autocomplete], input[aria-controls], input[aria-haspopup="listbox"], [role="combobox"], button[aria-haspopup="listbox"], [aria-haspopup="listbox"]'
     )].find(el => isVisibleElement(el) && !el.disabled);
     if (dropdown) {
       const value = normalizeText(
@@ -1444,6 +1881,10 @@ function chooseYesForRelocationQuestions() {
       );
       if (scoreRelocationOptionText(value) > 0 && isChoiceControlSelected(dropdown)) continue;
       if (!claimBooleanAnswerClick(root, 'open-affirmative-dropdown', 'relocation eligibility')) return true;
+      if (dropdown instanceof HTMLInputElement && dropdown.value) {
+        setNativeValue(dropdown, '');
+        dispatchInputEvents(dropdown);
+      }
       dropdown.click();
       setTimeout(() => selectYesFromOpenDropdown(root, dropdown), 150);
       setTimeout(() => selectYesFromOpenDropdown(root, dropdown), 500);
@@ -1468,9 +1909,234 @@ function chooseYesForRelocationQuestions() {
   return false;
 }
 
+function chooseYesForExplicitOnsiteAvailability() {
+  const promptNodes = [...document.querySelectorAll('label, legend, p, span, div')]
+    .filter(node => {
+      if (!isVisibleElement(node)) return false;
+      const text = normalizeText(node.innerText || node.textContent || '');
+      return text.length >= 20 && text.length <= 700 && isExplicitOnsiteAvailabilityQuestion(text);
+    })
+    .sort((a, b) =>
+      normalizeText(a.innerText || a.textContent || '').length -
+      normalizeText(b.innerText || b.textContent || '').length
+    );
+
+  for (const promptNode of promptNodes) {
+    let root = promptNode;
+    for (let depth = 0; depth < 8 && root; depth++, root = root.parentElement) {
+      const controls = [...root.querySelectorAll(
+        'input[type="radio"], [role="radio"], button, [role="button"], label'
+      )].filter(control => isVisibleElement(control) && !control.disabled);
+      const yesControl = controls.find(control => /^(yes|true)\b/.test(getChoiceControlText(control)));
+      const hasNoControl = controls.some(control => /^(no|false)\b/.test(getChoiceControlText(control)));
+      if (yesControl && hasNoControl) {
+        if (isChoiceControlSelected(yesControl)) return true;
+        if (!claimBooleanAnswerClick(root, 'yes', 'explicit on-site availability question')) return true;
+        clickChoiceControl(yesControl);
+        console.log('[JobRight Auto-Skip] selected Yes for explicit on-site availability question');
+        return true;
+      }
+
+      const select = root.querySelector('select');
+      if (select) {
+        const yesOption = [...select.options].find(option =>
+          /^(yes|true)\b/.test(normalizeText(`${option.textContent || ''} ${option.value || ''}`))
+        );
+        if (!yesOption) continue;
+        if (select.value === yesOption.value) return true;
+        if (!claimBooleanAnswerClick(root, 'yes', 'explicit on-site availability question')) return true;
+        select.value = yesOption.value;
+        select.dispatchEvent(new Event('input', { bubbles: true }));
+        select.dispatchEvent(new Event('change', { bubbles: true }));
+        console.log('[JobRight Auto-Skip] selected Yes for explicit on-site availability question');
+        return true;
+      }
+
+      const dropdown = [...root.querySelectorAll(
+        'input[role="combobox"], input[aria-autocomplete], input[aria-controls], input[aria-haspopup="listbox"], [role="combobox"], button[aria-haspopup="listbox"], [aria-haspopup="listbox"]'
+      )].find(control => isVisibleElement(control) && !control.disabled);
+      if (!dropdown) continue;
+      const current = normalizeText(
+        `${dropdown.value || ''} ${dropdown.textContent || ''} ${dropdown.getAttribute('data-value') || ''}`
+      );
+      if (/^(yes|true)\b/.test(current)) return true;
+      if (!claimBooleanAnswerClick(root, 'open-yes-dropdown', 'explicit on-site availability question')) return true;
+      dropdown.click();
+      setTimeout(() => selectYesFromOpenDropdown(root, dropdown), 150);
+      setTimeout(() => selectYesFromOpenDropdown(root, dropdown), 500);
+      console.log('[JobRight Auto-Skip] opening Yes dropdown for explicit on-site availability question');
+      return true;
+    }
+  }
+  return false;
+}
+
 function scheduleRelocationAnswer(delay = 180) {
   clearTimeout(relocationAnswerTimer);
   relocationAnswerTimer = setTimeout(chooseYesForRelocationQuestions, delay);
+}
+
+function chooseYesForExperienceQuestions() {
+  return chooseBooleanAnswerForQuestion(
+    isExperienceCapabilityQuestion,
+    'yes',
+    'experience/capability question',
+  ) || chooseBooleanAnswerNearPrompt(
+    isExperienceCapabilityQuestion,
+    'yes',
+    'experience/capability question',
+  ) || chooseYesForExperienceDropdowns();
+}
+
+function chooseYesForExperienceDropdowns() {
+  const roots = [...document.querySelectorAll(
+    'fieldset, [role="group"], [class*="field"], [class*="question"], section, div'
+  )]
+    .filter(root => isVisibleElement(root) && isExperienceCapabilityQuestion(getQuestionPromptText(root)))
+    .filter(root => ![...root.children].some(child =>
+      isVisibleElement(child) && isExperienceCapabilityQuestion(getQuestionPromptText(child))
+    ))
+    .sort((a, b) =>
+      normalizeText(a.innerText || a.textContent || '').length -
+      normalizeText(b.innerText || b.textContent || '').length
+    );
+
+  for (const root of roots) {
+    const dropdown = [...root.querySelectorAll(
+      '[role="combobox"], button[aria-haspopup="listbox"], [aria-haspopup="listbox"]'
+    )].find(control => isVisibleElement(control) && !control.disabled);
+    if (!dropdown) continue;
+    const current = normalizeText(`${dropdown.value || ''} ${dropdown.textContent || ''} ${dropdown.getAttribute('data-value') || ''}`);
+    if (/^(yes|true)\b/.test(current)) return true;
+    if (!claimBooleanAnswerClick(root, 'yes', 'experience/capability dropdown')) return true;
+    dropdown.click();
+    const selectYes = () => {
+      const controlledId = dropdown.getAttribute('aria-controls') || dropdown.getAttribute('aria-owns');
+      const controlledRoot = controlledId ? document.getElementById(controlledId) : null;
+      const optionRoot = controlledRoot && isVisibleElement(controlledRoot) ? controlledRoot : document;
+      const option = [...optionRoot.querySelectorAll('[role="option"], [role="menuitem"], li, [data-value]')]
+        .find(item => isVisibleElement(item) && !item.disabled && /^(yes|true)\b/.test(getChoiceControlText(item)));
+      if (option) option.click();
+    };
+    setTimeout(selectYes, 150);
+    setTimeout(selectYes, 500);
+    console.log('[JobRight Auto-Skip] selected Yes for experience/capability dropdown');
+    return true;
+  }
+  return false;
+}
+
+function scheduleExperienceAnswer(delay = 180) {
+  clearTimeout(experienceAnswerTimer);
+  experienceAnswerTimer = setTimeout(chooseYesForExperienceQuestions, delay);
+}
+
+function isAgeCategoryQuestion(text = '') {
+  const normalized = normalizeText(text);
+  return /\b(?:what is|select|choose|indicate|provide)\b.{0,45}\b(?:your )?(?:current )?age\b/.test(normalized) ||
+    /\b(?:age range|age bracket|age category)\b/.test(normalized);
+}
+
+function scoreAgeCategoryOption(text = '') {
+  const normalized = normalizeText(text);
+  if (/\b(?:prefer not|decline to answer|do not wish to answer)\b/.test(normalized)) return 10;
+  if (/\b(?:under|below|less than)\s*30\b/.test(normalized)) return 100;
+  if (/\b(?:18|19|20|21|22|23|24|25)\s*[-–]\s*29\b/.test(normalized)) return 90;
+  return -1;
+}
+
+function findBestAgeCategoryOption(options) {
+  return options
+    .map((option, index) => ({
+      option,
+      index,
+      score: scoreAgeCategoryOption(getChoiceControlText(option)),
+    }))
+    .filter(candidate => candidate.score > 0)
+    .sort((a, b) => b.score - a.score || a.index - b.index)[0]?.option || null;
+}
+
+function selectAgeFromOpenDropdown(root, dropdown) {
+  const controlledId = dropdown?.getAttribute('aria-controls') ||
+    dropdown?.getAttribute('aria-owns');
+  const controlledRoot = controlledId ? document.getElementById(controlledId) : null;
+  const optionRoot = controlledRoot && isVisibleElement(controlledRoot)
+    ? controlledRoot
+    : document;
+  const option = findBestAgeCategoryOption([...optionRoot.querySelectorAll(
+    '[role="option"], [role="menuitem"], li, [data-value]'
+  )].filter(el => isVisibleElement(el) && !el.disabled));
+  if (!option) return false;
+  if (!claimBooleanAnswerClick(root, 'under-30-or-prefer-not', 'age category')) return true;
+  clickChoiceControl(option);
+  console.log(`[JobRight Auto-Skip] selected age category: ${getChoiceControlText(option).slice(0, 120)}`);
+  return true;
+}
+
+function chooseAgeCategory() {
+  const roots = [...document.querySelectorAll(
+    'fieldset, [role="radiogroup"], [role="group"], [class*="field"], [class*="question"], section, div'
+  )]
+    .filter(root => {
+      if (!isVisibleElement(root) || !isAgeCategoryQuestion(getQuestionPromptText(root))) return false;
+      return !!root.querySelector('input[type="radio"], select, [role="radio"], [role="combobox"], button, [role="button"]');
+    })
+    .filter(root => ![...root.children].some(child =>
+      isVisibleElement(child) &&
+      isAgeCategoryQuestion(getQuestionPromptText(child)) &&
+      !!child.querySelector('input[type="radio"], select, [role="radio"], [role="combobox"], button, [role="button"]')
+    ))
+    .sort((a, b) =>
+      normalizeText(a.innerText || a.textContent || '').length -
+      normalizeText(b.innerText || b.textContent || '').length
+    );
+
+  for (const root of roots) {
+    const radios = [...root.querySelectorAll('input[type="radio"]')];
+    const radio = findBestAgeCategoryOption(radios);
+    if (radio) {
+      if (radio.checked) return true;
+      if (!claimBooleanAnswerClick(root, 'under-30-or-prefer-not', 'age category')) return true;
+      clickChoiceControl(radio);
+      console.log(`[JobRight Auto-Skip] selected age category: ${getChoiceControlText(radio).slice(0, 120)}`);
+      return true;
+    }
+
+    const select = root.querySelector('select');
+    if (select) {
+      const option = findBestAgeCategoryOption([...select.options]);
+      if (option) {
+        if (select.value === option.value) return true;
+        if (!claimBooleanAnswerClick(root, 'under-30-or-prefer-not', 'age category')) return true;
+        select.value = option.value;
+        dispatchInputEvents(select);
+        console.log(`[JobRight Auto-Skip] selected age category: ${getChoiceControlText(option).slice(0, 120)}`);
+        return true;
+      }
+    }
+
+    const dropdown = [...root.querySelectorAll(
+      '[role="combobox"], button[aria-haspopup="listbox"], [aria-haspopup="listbox"]'
+    )].find(el => isVisibleElement(el) && !el.disabled);
+    if (dropdown) {
+      dropdown.click();
+      setTimeout(() => selectAgeFromOpenDropdown(root, dropdown), 150);
+      setTimeout(() => selectAgeFromOpenDropdown(root, dropdown), 500);
+      return true;
+    }
+
+    const control = findBestAgeCategoryOption([...root.querySelectorAll(
+      '[role="radio"], [role="option"], button, [role="button"], label'
+    )].filter(el => isVisibleElement(el) && !el.disabled));
+    if (control) {
+      if (isChoiceControlSelected(control)) return true;
+      if (!claimBooleanAnswerClick(root, 'under-30-or-prefer-not', 'age category')) return true;
+      clickChoiceControl(control);
+      console.log(`[JobRight Auto-Skip] selected age category: ${getChoiceControlText(control).slice(0, 120)}`);
+      return true;
+    }
+  }
+  return false;
 }
 
 function autofillOtp(otp, source = document.activeElement) {
@@ -1617,6 +2283,30 @@ function scheduleSubmitAfterVerifiedJobrightRepair(fields, delay = 1200) {
   };
 
   jobrightRepairSubmitTimer = setTimeout(verifyAndSubmit, delay);
+}
+
+function scheduleSubmitAfterVerifiedAtsRepair(fields, delay = 1500) {
+  const normalizedFields = (fields || []).filter(Boolean).slice(0, 12);
+  const signature = normalizedFields.map(normalizeText).join('|');
+  if (!signature) return;
+  const startedAt = Date.now();
+  clearTimeout(atsRepairSubmitTimer);
+
+  const verifyAndSubmit = () => {
+    if (Date.now() - startedAt > 30_000) return;
+    if (!normalizedFields.every(isReportedMissingFieldResolved)) {
+      atsRepairSubmitTimer = setTimeout(verifyAndSubmit, 1000);
+      return;
+    }
+    if (signature === lastAtsRepairSubmitSignature &&
+        Date.now() - lastAtsRepairSubmitAt < 30_000) return;
+    if (!clickSubmitButton()) return;
+    lastAtsRepairSubmitSignature = signature;
+    lastAtsRepairSubmitAt = Date.now();
+    console.log('[JobRight Auto-Skip] submitted once after all ATS-reported missing fields were verified filled');
+  };
+
+  atsRepairSubmitTimer = setTimeout(verifyAndSubmit, delay);
 }
 
 function isManualEditField(el) {
@@ -1864,8 +2554,20 @@ function findFieldContainer(fieldText) {
 
 function nudgeField(fieldText, errorEl) {
   const container = findFieldContainer(fieldText);
-  if (!container) return false;
+  if (!container) {
+    console.warn('[JobRight Auto-Skip] validation repair skipped: field container not found', {
+      field: fieldText,
+      error: errorEl?.textContent?.trim() || '',
+    });
+    return false;
+  }
   container.scrollIntoView({ block: 'center', inline: 'nearest' });
+
+  // Prefer the known answer over whichever segmented control merely appears
+  // selected. Several ATSes require a fresh click on the same radio after a
+  // server-side validation response.
+  if (hasBooleanChoiceControls(container) &&
+      reassertBooleanAnswerInContainer(container, fieldText)) return true;
 
   const isFileChooserControl = (el) => {
     if (el instanceof HTMLInputElement && el.type === 'file') return true;
@@ -1885,10 +2587,17 @@ function nudgeField(fieldText, errorEl) {
   const checkedControl = [...container.querySelectorAll('input[type="radio"]:checked, input[type="checkbox"]:checked')]
     .find(el => !el.disabled && !isFileChooserControl(el));
   if (checkedControl) {
+    const before = describeValidationControl(checkedControl);
     checkedControl.click();
     setNativeChecked(checkedControl, true);
     checkedControl.dispatchEvent(new Event('input', { bubbles: true }));
     checkedControl.dispatchEvent(new Event('change', { bubbles: true }));
+    console.log('[JobRight Auto-Skip] validation selected-control re-click', {
+      field: fieldText,
+      clickDispatched: true,
+      before,
+      after: describeValidationControl(checkedControl),
+    });
     return true;
   }
 
@@ -1916,9 +2625,16 @@ function nudgeField(fieldText, errorEl) {
     });
 
   if (selected) {
+    const before = describeValidationControl(selected);
     selected.click();
     selected.dispatchEvent(new Event('input', { bubbles: true }));
     selected.dispatchEvent(new Event('change', { bubbles: true }));
+    console.log('[JobRight Auto-Skip] validation selected-control re-click', {
+      field: fieldText,
+      clickDispatched: true,
+      before,
+      after: describeValidationControl(selected),
+    });
     return true;
   }
 
@@ -1932,7 +2648,15 @@ function nudgeField(fieldText, errorEl) {
       return false;
     });
 
-  if (!target) return false;
+  if (!target) {
+    console.warn('[JobRight Auto-Skip] validation repair skipped: no populated control found', {
+      field: fieldText,
+      controls: [...container.querySelectorAll('input, textarea, select, button, [role="radio"], [role="button"]')]
+        .map(describeValidationControl),
+    });
+    return false;
+  }
+  const before = describeValidationControl(target);
   target.click?.();
   target.focus?.();
   if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement) {
@@ -1949,6 +2673,12 @@ function nudgeField(fieldText, errorEl) {
     target.dispatchEvent(new Event('input', { bubbles: true }));
     target.dispatchEvent(new Event('change', { bubbles: true }));
   }
+  console.log('[JobRight Auto-Skip] validation value-control re-trigger', {
+    field: fieldText,
+    clickDispatched: true,
+    before,
+    after: describeValidationControl(target),
+  });
   return true;
 }
 
@@ -2084,6 +2814,7 @@ function checkRequiredAgreements() {
     const checked = box.checked || box.getAttribute('aria-checked') === 'true';
     const rawText = checkboxContextText(box);
     const text = normalizeText(rawText);
+    if (isExclusiveComplianceChecklist(text)) continue;
     const consentish = /\b(i affirm|i agree|agree to|accurate|truthful|falsification|terms and conditions|terms & conditions|terms of use|terms of service|accept the terms|privacy polic(?:y|ies)|privacy notice|confirm|acknowledge|certify|consent to|by checking this box)\b/.test(text);
     const mandatory = /\b(required|this field is required|must|please accept|to proceed|proceed)\b/.test(text) || rawText.includes('*');
     if (!consentish || !mandatory) continue;
@@ -2104,6 +2835,125 @@ function checkRequiredAgreements() {
     console.log('[JobRight Auto-Skip] checked required agreement checkbox');
   }
   chooseRequiredAgreementDropdowns();
+  enforceComplianceChecklistSelections();
+  preventMultipleCredentialSelections();
+}
+
+function isSanctionsChecklistQuestion(text = '') {
+  const normalized = normalizeText(text);
+  return /\b(?:sanctions?|export controls?|cuba|iran|north korea|syria|russia|belarus)\b/.test(normalized) &&
+    /\bnone of (?:the )?above\b/.test(normalized);
+}
+
+function isCitizenshipChecklistQuestion(text = '') {
+  const normalized = normalizeText(text);
+  return /\bu\.?s\.?\s+citizen\b/.test(normalized) &&
+    /\b(?:non[- ]?citizen national|permanent resident|green card|asylum|refugee)\b/.test(normalized);
+}
+
+function isExclusiveComplianceChecklist(text = '') {
+  return isSanctionsChecklistQuestion(text) || isCitizenshipChecklistQuestion(text);
+}
+
+function enforceExclusiveChecklist(root, targetPattern, logLabel) {
+  const boxes = [...root.querySelectorAll('input[type="checkbox"]')]
+    .filter(box => !box.disabled);
+  const target = boxes.find(box => targetPattern.test(getCheckboxOptionText(box)));
+  if (!target) return false;
+
+  const changed = setCheckboxChoice(target, true);
+  for (const box of boxes) {
+    if (box !== target && box.checked) setCheckboxChoice(box, false);
+  }
+  if (changed || boxes.some(box => box !== target && box.checked)) {
+    console.log(`[JobRight Auto-Skip] selected only ${logLabel}`);
+  }
+  return changed;
+}
+
+function enforceComplianceChecklistSelections() {
+  const roots = [...document.querySelectorAll(
+    'fieldset, [role="group"], [class*="field"], [class*="question"], section, div'
+  )]
+    .filter(root => isVisibleElement(root) && root.querySelectorAll('input[type="checkbox"]').length >= 2)
+    .filter(root => isExclusiveComplianceChecklist(getQuestionPromptText(root)))
+    .filter(root => ![...root.children].some(child =>
+      isVisibleElement(child) &&
+      child.querySelectorAll('input[type="checkbox"]').length >= 2 &&
+      isExclusiveComplianceChecklist(getQuestionPromptText(child))
+    ));
+
+  for (const root of roots) {
+    const prompt = getQuestionPromptText(root);
+    if (isSanctionsChecklistQuestion(prompt)) {
+      return enforceExclusiveChecklist(root, /^(?:none of (?:the )?above|none)\b/, 'None of the above for sanctions/export controls');
+    }
+    if (isCitizenshipChecklistQuestion(prompt)) {
+      return enforceExclusiveChecklist(root, /^u\.?s\.?\s+citizen\b/, 'U.S. citizen for citizenship status');
+    }
+  }
+  return false;
+}
+
+function isCredentialMultiSelectQuestion(text = '') {
+  const normalized = normalizeText(text);
+  return /\b(?:designation|certification|certificate|license|licence|credential|professional qualification)\b/.test(normalized) &&
+    /\b(?:select|hold|active|current|currently|have)\b/.test(normalized);
+}
+
+function getCheckboxOptionText(box) {
+  return normalizeText([
+    box.value,
+    box.getAttribute?.('aria-label'),
+    labelTextForControl(box),
+    box.closest?.('label')?.textContent,
+  ].filter(Boolean).join(' '));
+}
+
+function setCheckboxChoice(box, checked) {
+  if (!box || box.checked === checked) return false;
+  const target = getVisibleCheckboxClickTarget(box) || box;
+  target.click();
+  setNativeChecked(box, checked);
+  box.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+  box.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+  return true;
+}
+
+function preventMultipleCredentialSelections() {
+  const roots = [...document.querySelectorAll(
+    'fieldset, [role="group"], [class*="field"], [class*="question"], section, div'
+  )]
+    .filter(root => {
+      if (!isVisibleElement(root) || !isCredentialMultiSelectQuestion(getQuestionPromptText(root))) return false;
+      return root.querySelectorAll('input[type="checkbox"]').length >= 2;
+    })
+    .filter(root => ![...root.children].some(child =>
+      isVisibleElement(child) &&
+      isCredentialMultiSelectQuestion(getQuestionPromptText(child)) &&
+      child.querySelectorAll('input[type="checkbox"]').length >= 2
+    ));
+
+  for (const root of roots) {
+    const boxes = [...root.querySelectorAll('input[type="checkbox"]')]
+      .filter(box => !box.disabled);
+    const selected = boxes.filter(box => box.checked);
+    if (selected.length <= 1) continue;
+    const noneBox = boxes.find(box => /^(?:none|none of (?:the )?above|no (?:designation|certification|license|licence|credential)s?|not applicable)\b/.test(
+      getCheckboxOptionText(box),
+    ));
+
+    if (noneBox) {
+      setCheckboxChoice(noneBox, true);
+      boxes.filter(box => box !== noneBox && box.checked).forEach(box => setCheckboxChoice(box, false));
+      console.log('[JobRight Auto-Skip] cleared multiple credential/designation selections and chose None');
+    } else {
+      selected.forEach(box => setCheckboxChoice(box, false));
+      console.log('[JobRight Auto-Skip] cleared multiple credential/designation selections; no None option was available');
+    }
+    return true;
+  }
+  return false;
 }
 
 function getVisibleCheckboxClickTarget(box) {
@@ -2263,9 +3113,10 @@ function findResumeFileInput() {
 }
 
 function findCoverLetterFileInput() {
-  return deepQueryAll('input[type="file"]')
-    .filter(input => !input.disabled && !input.files?.length)
-    .find(isCoverLetterFileInput) || null;
+  const inputs = deepQueryAll('input[type="file"]')
+    .filter(input => !input.disabled && !input.files?.length);
+  return inputs.find(isCoverLetterFileInput) ||
+    (inputs.length === 1 && !isResumeFileInput(inputs[0]) ? inputs[0] : null);
 }
 
 function hasCoverLetterValidationError() {
@@ -2302,15 +3153,36 @@ async function uploadFallbackResumeIfNeeded() {
   if (resumeFallbackUploaded || !isResumeRequiredMissing()) return;
 
   const input = findResumeFileInput();
-  if (!input) return;
+  if (!input) {
+    console.warn('[JobRight Auto-Skip] fallback resume upload skipped: no Resume/CV file input found', {
+      fileInputs: deepQueryAll('input[type="file"]').map(input => ({
+        name: input.name,
+        id: input.id,
+        hints: getResumeInputHints(input).slice(0, 400),
+        disabled: input.disabled,
+      })),
+    });
+    return;
+  }
 
   const res = await fetch(chrome.runtime.getURL(FALLBACK_RESUME_PATH));
-  if (!res.ok) return;
+  if (!res.ok) {
+    console.warn('[JobRight Auto-Skip] fallback resume upload failed: asset fetch failed', {
+      status: res.status,
+      input: describeValidationControl(input),
+    });
+    return;
+  }
   const blob = await res.blob();
   const file = new File([blob], FALLBACK_RESUME_NAME, { type: 'application/pdf' });
   const transfer = new DataTransfer();
   transfer.items.add(file);
-  if (!setFileInputFiles(input, transfer.files)) return;
+  if (!setFileInputFiles(input, transfer.files)) {
+    console.warn('[JobRight Auto-Skip] fallback resume upload failed: could not assign file to input', {
+      input: describeValidationControl(input),
+    });
+    return;
+  }
 
   input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
   input.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
@@ -2318,13 +3190,20 @@ async function uploadFallbackResumeIfNeeded() {
   await new Promise(resolve => setTimeout(resolve, 500));
   if (!input.files?.length) {
     resumeFallbackAttempts++;
+    console.warn('[JobRight Auto-Skip] fallback resume upload did not persist after input events', {
+      attempt: resumeFallbackAttempts,
+      input: describeValidationControl(input),
+    });
     if (resumeFallbackAttempts < 3) scheduleFallbackResumeUpload(500);
     return;
   }
 
   resumeFallbackUploaded = true;
   resumeFallbackAttempts = 0;
-  console.log('[JobRight Auto-Skip] attached standard fallback resume to missing Resume/CV field');
+  console.log('[JobRight Auto-Skip] attached standard fallback resume to missing Resume/CV field', {
+    input: describeValidationControl(input),
+    file: input.files?.[0]?.name || '',
+  });
   if (latestJobrightMissingFields.some(field => isResumeFieldText(field))) {
     scheduleSubmitAfterVerifiedJobrightRepair(latestJobrightMissingFields);
   }
@@ -2332,24 +3211,47 @@ async function uploadFallbackResumeIfNeeded() {
 
 function scheduleFallbackResumeUpload(delay = 700) {
   clearTimeout(resumeFallbackTimer);
-  resumeFallbackTimer = setTimeout(() => uploadFallbackResumeIfNeeded().catch(() => {}), delay);
+  resumeFallbackTimer = setTimeout(() => uploadFallbackResumeIfNeeded().catch(error => {
+    console.warn('[JobRight Auto-Skip] fallback resume upload threw an exception', error);
+  }), delay);
 }
 
 async function uploadFallbackCoverLetterIfNeeded() {
   if (coverLetterFallbackUploaded || !isCoverLetterRequiredMissing()) return;
 
   const input = findCoverLetterFileInput();
-  if (!input) return;
+  if (!input) {
+    console.warn('[JobRight Auto-Skip] fallback cover letter upload skipped: no Cover Letter file input found', {
+      fileInputs: deepQueryAll('input[type="file"]').map(input => ({
+        name: input.name,
+        id: input.id,
+        hints: getResumeInputHints(input).slice(0, 400),
+        disabled: input.disabled,
+      })),
+    });
+    return;
+  }
   const shouldRetrySubmit = hasCoverLetterValidationError() ||
     Date.now() - jobrightCoverLetterMissingAt < 30_000;
 
   const res = await fetch(chrome.runtime.getURL(FALLBACK_COVER_LETTER_PATH));
-  if (!res.ok) return;
+  if (!res.ok) {
+    console.warn('[JobRight Auto-Skip] fallback cover letter upload failed: asset fetch failed', {
+      status: res.status,
+      input: describeValidationControl(input),
+    });
+    return;
+  }
   const blob = await res.blob();
   const file = new File([blob], FALLBACK_COVER_LETTER_NAME, { type: 'application/pdf' });
   const transfer = new DataTransfer();
   transfer.items.add(file);
-  if (!setFileInputFiles(input, transfer.files)) return;
+  if (!setFileInputFiles(input, transfer.files)) {
+    console.warn('[JobRight Auto-Skip] fallback cover letter upload failed: could not assign file to input', {
+      input: describeValidationControl(input),
+    });
+    return;
+  }
 
   input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
   input.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
@@ -2357,13 +3259,20 @@ async function uploadFallbackCoverLetterIfNeeded() {
   await new Promise(resolve => setTimeout(resolve, 500));
   if (!input.files?.length) {
     coverLetterFallbackAttempts++;
+    console.warn('[JobRight Auto-Skip] fallback cover letter upload did not persist after input events', {
+      attempt: coverLetterFallbackAttempts,
+      input: describeValidationControl(input),
+    });
     if (coverLetterFallbackAttempts < 3) scheduleFallbackCoverLetterUpload(500);
     return;
   }
 
   coverLetterFallbackUploaded = true;
   coverLetterFallbackAttempts = 0;
-  console.log('[JobRight Auto-Skip] attached fallback cover letter to required Cover Letter field');
+  console.log('[JobRight Auto-Skip] attached fallback cover letter to required Cover Letter field', {
+    input: describeValidationControl(input),
+    file: input.files?.[0]?.name || '',
+  });
   if (latestJobrightMissingFields.some(field => isCoverLetterFieldText(field))) {
     scheduleSubmitAfterVerifiedJobrightRepair(latestJobrightMissingFields);
   } else if (shouldRetrySubmit) {
@@ -2374,13 +3283,17 @@ async function uploadFallbackCoverLetterIfNeeded() {
 function scheduleFallbackCoverLetterUpload(delay = 700) {
   clearTimeout(coverLetterFallbackTimer);
   coverLetterFallbackTimer = setTimeout(
-    () => uploadFallbackCoverLetterIfNeeded().catch(() => {}),
+    () => uploadFallbackCoverLetterIfNeeded().catch(error => {
+      console.warn('[JobRight Auto-Skip] fallback cover letter upload threw an exception', error);
+    }),
     delay,
   );
 }
 
 function retryValidationErrors() {
   if (!validationRetryEnabled) return;
+
+  const errors = getValidationErrorElements();
 
   const jobrightKnows = latestJobrightMissingFields.length > 0 &&
     Date.now() - latestJobrightMissingFieldsAt <= 30_000;
@@ -2391,25 +3304,29 @@ function retryValidationErrors() {
   if (jobrightKnows) {
     const sig = latestJobrightMissingFields.map(normalizeText).join('|').slice(0, 500);
     const count = validationRetryCounts.get(sig) || 0;
-    if (count >= VALIDATION_RETRY_MAX) return;
-    validationRetryCounts.set(sig, count + 1);
+    if (count < VALIDATION_RETRY_MAX) {
+      validationRetryCounts.set(sig, count + 1);
 
-    let nudged = false;
-    for (const fieldText of latestJobrightMissingFields) {
-      if (nudgeField(fieldText, null)) nudged = true;
+      let nudged = false;
+      for (const fieldText of latestJobrightMissingFields) {
+        if (nudgeField(fieldText, null)) nudged = true;
+      }
+      if (nudged) {
+        console.log('[JobRight Auto-Skip] nudged missing fields reported by JobRight');
+        if (!errors.length) {
+          scheduleSubmitAfterVerifiedJobrightRepair(latestJobrightMissingFields);
+        }
+      }
     }
-    if (nudged) {
-      console.log('[JobRight Auto-Skip] nudged missing fields reported by JobRight');
-      scheduleSubmitAfterVerifiedJobrightRepair(latestJobrightMissingFields);
-    }
-    return;
+    // JobRight can report only one local field while the ATS banner names
+    // additional required fields. Continue into the ATS-specific repair path.
+    if (!errors.length) return;
   }
 
   // ── PATH B: ATS returned a validation error after a submit attempt ────────
   // A visible correction banner is explicit enough to repair even if JobRight
   // incorrectly reports every field as filled or the submit timestamp was lost.
   const recentSubmitAttempt = Date.now() - lastSubmitAttemptAt < 15_000;
-  const errors = getValidationErrorElements();
   if (!errors.length) return;
   const hasExplicitCorrection = errors.some(error => {
     const text = normalizeText(error.textContent);
@@ -2422,23 +3339,38 @@ function retryValidationErrors() {
     .flatMap(getImpactedFieldTexts)
     .map(text => text.trim())
     .filter(Boolean))];
+  if (fieldTexts.some(isResumeFieldText)) {
+    jobrightResumeMissingAt = Date.now();
+    scheduleFallbackResumeUpload(0);
+  }
+  if (fieldTexts.some(isCoverLetterFieldText)) {
+    jobrightCoverLetterMissingAt = Date.now();
+    scheduleFallbackCoverLetterUpload(0);
+  }
+  console.groupCollapsed(`[JobRight Auto-Skip] ATS validation error (${fieldTexts.length} field${fieldTexts.length === 1 ? '' : 's'})`);
+  console.log('errors', errors.map(error => (error.textContent || '').replace(/\s+/g, ' ').trim()));
+  console.log('fields', fieldTexts);
+  console.groupEnd();
   const sig = fieldTexts.map(normalizeText).join('|').slice(0, 500);
   const count = validationRetryCounts.get(sig) || 0;
   if (count >= VALIDATION_RETRY_MAX) return;
   validationRetryCounts.set(sig, count + 1);
 
   let nudged = false;
+  try {
+    chrome.runtime.sendMessage({
+      type: 'ATS_VALIDATION_ERROR',
+      fields: fieldTexts,
+      url: location.href,
+      origin: location.origin,
+    });
+  } catch (_) {}
   for (const fieldText of fieldTexts) {
     if (nudgeField(fieldText, null)) nudged = true;
   }
   if (nudged) {
     console.log('[JobRight Auto-Skip] nudged ATS validation field after failed submit attempt');
-    clearTimeout(jobrightRepairSubmitTimer);
-    jobrightRepairSubmitTimer = setTimeout(() => {
-      if (clickSubmitButton()) {
-        console.log('[JobRight Auto-Skip] retried submit once after ATS validation nudge');
-      }
-    }, 1500);
+    scheduleSubmitAfterVerifiedAtsRepair(fieldTexts);
   }
 }
 
@@ -2721,7 +3653,8 @@ function checkForSubmission() {
   const confirmedFailure = ATS_CONFIRMED_FAILURE_PATTERNS.some(re => re.test(text));
   const configuredMatch = terminalSuccessSurface &&
     loadTerminalSuccessPhrases().some(phrase => text.includes(phrase));
-  if (!confirmedSuccess && !confirmedFailure && !configuredMatch) return;
+  const successDetected = confirmedSuccess || configuredMatch;
+  if (!successDetected && !confirmedFailure) return;
   if (Date.now() - lastSubmissionSignalAt < 1_500) return;
 
   signalSent = true;
@@ -2734,7 +3667,7 @@ function checkForSubmission() {
       type: 'ATS_SUBMISSION_DETECTED',
       url: location.href,
       origin: location.origin,
-      confirmedSuccess,
+      confirmedSuccess: successDetected,
       confirmedFailure,
     });
   } catch (_) {}
@@ -2783,8 +3716,10 @@ let pageObserver = new MutationObserver(() => {
   scheduleRecruitingCommunicationsOptIn();
   scheduleWorkEligibilityAnswers();
   scheduleRelocationAnswer();
+  scheduleExperienceAnswer();
+  chooseAgeCategory();
   chooseYesForAccuracyAffirmations();
-  chooseNoForPreviousEmployeeQuestions();
+  chooseNoForEmploymentDisclosureQuestions();
   scheduleValidationRetry();
   scheduleTermsCheckboxCheck();
   scheduleFallbackResumeUpload();
@@ -2815,8 +3750,10 @@ if (document.readyState === 'complete' || document.readyState === 'interactive')
   scheduleRecruitingCommunicationsOptIn(0);
   scheduleWorkEligibilityAnswers(0);
   scheduleRelocationAnswer(0);
+  scheduleExperienceAnswer(0);
+  chooseAgeCategory();
   chooseYesForAccuracyAffirmations();
-  chooseNoForPreviousEmployeeQuestions();
+  chooseNoForEmploymentDisclosureQuestions();
   scheduleValidationRetry();
   scheduleTermsCheckboxCheck();
   scheduleFallbackResumeUpload();
@@ -2831,8 +3768,10 @@ if (document.readyState === 'complete' || document.readyState === 'interactive')
     scheduleRecruitingCommunicationsOptIn(0);
     scheduleWorkEligibilityAnswers(0);
     scheduleRelocationAnswer(0);
+    scheduleExperienceAnswer(0);
+    chooseAgeCategory();
     chooseYesForAccuracyAffirmations();
-    chooseNoForPreviousEmployeeQuestions();
+    chooseNoForEmploymentDisclosureQuestions();
     scheduleValidationRetry();
     scheduleTermsCheckboxCheck();
     scheduleFallbackResumeUpload();
@@ -2883,12 +3822,15 @@ setInterval(() => {
     lastInvalidOtpRetryAt = 0;
     clearTimeout(manualEditSubmitTimer);
     clearTimeout(jobrightRepairSubmitTimer);
+    clearTimeout(atsRepairSubmitTimer);
     lastManualEditSubmitSignature = '';
     lastManualEditSubmitAt = 0;
     lastJobrightNudgeSignature = '';
     lastJobrightNudgeAt = 0;
     lastJobrightRepairSubmitSignature = '';
     lastJobrightRepairSubmitAt = 0;
+    lastAtsRepairSubmitSignature = '';
+    lastAtsRepairSubmitAt = 0;
     latestJobrightMissingFields = [];
     latestJobrightMissingFieldsAt = 0;
     clickLeverApplyForThisJobOnce();
@@ -2897,8 +3839,10 @@ setInterval(() => {
     scheduleRecruitingCommunicationsOptIn(0);
     scheduleWorkEligibilityAnswers(0);
     scheduleRelocationAnswer(0);
+    scheduleExperienceAnswer(0);
+    chooseAgeCategory();
     chooseYesForAccuracyAffirmations();
-    chooseNoForPreviousEmployeeQuestions();
+    chooseNoForEmploymentDisclosureQuestions();
     scheduleValidationRetry();
     scheduleTermsCheckboxCheck();
     scheduleFallbackResumeUpload();
@@ -2916,8 +3860,10 @@ setInterval(() => {
 setInterval(chooseYesForRecruitingCommunications, 2_000);
 setInterval(correctWorkEligibilityAnswers, 2_000);
 setInterval(chooseYesForRelocationQuestions, 2_000);
+setInterval(chooseYesForExperienceQuestions, 2_000);
+setInterval(chooseAgeCategory, 2_000);
 setInterval(chooseYesForAccuracyAffirmations, 2_000);
-setInterval(chooseNoForPreviousEmployeeQuestions, 2_000);
+setInterval(chooseNoForEmploymentDisclosureQuestions, 2_000);
 setInterval(checkRequiredAgreements, 2_000);
 setInterval(checkForSubmission, 1_500);
 setInterval(() => {

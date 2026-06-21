@@ -38,11 +38,16 @@ chrome.runtime.onInstalled.addListener(async () => {
   for (const tab of tabs) {
     await ensureJobrightContentScript(tab.id);
   }
+  // An unpacked-extension reload invalidates the old ATS content-script
+  // context mid-OTP poll. Reinject the current script into open ATS tabs so
+  // the next poll continues instead of waiting on a dead context.
+  await reinjectOpenAtsTabs();
   setupAlarms();
 });
 
 chrome.runtime.onStartup.addListener(() => {
   setupAlarms();
+  reinjectOpenAtsTabs().catch(() => {});
   // Proactively refresh token on browser start so first OTP request is instant
   silentTokenRefresh().catch(() => {});
 });
@@ -65,13 +70,19 @@ function sendTabMessage(tabId, message, callback = () => {}) {
   }
 }
 
-async function injectScript(tabId, file) {
+async function injectScript(tabId, file, { forceAtsReload = false } = {}) {
   if (!tabId) return false;
   try {
     if (file === 'content.js') {
       await chrome.scripting.executeScript({
         target: { tabId },
         func: () => { globalThis.__jobrightForceContentReload = true; },
+      });
+    }
+    if (file === 'ats_content.js' && forceAtsReload) {
+      await chrome.scripting.executeScript({
+        target: { tabId, allFrames: true },
+        func: () => { try { delete globalThis.__jobrightAtsLoaded; } catch (_) {} },
       });
     }
     await chrome.scripting.executeScript({ target: { tabId }, files: [file] });
@@ -85,14 +96,19 @@ async function ensureJobrightContentScript(tabId) {
   return injectScript(tabId, 'content.js');
 }
 
-async function ensureAtsContentScript(tab) {
+async function ensureAtsContentScript(tab, { forceAtsReload = false } = {}) {
   const host = (() => {
     try { return new URL(tab?.url || '').hostname; } catch (_) { return ''; }
   })();
   if (!/\b(lever\.co|greenhouse\.io|ashbyhq\.com|myworkdayjobs\.com|myworkdaysite\.com|smartrecruiters\.com|icims\.com|jobvite\.com|workable\.com|bamboohr\.com|oraclecloud\.com|successfactors\.(?:com|eu)|applytojob\.com|recruitee\.com|teamtailor\.com|ultipro\.com|breezy\.hr|rippling\.com|pinpointhq\.com|comeet\.com|taleo\.net)$/i.test(host)) {
     return false;
   }
-  return injectScript(tab.id, 'ats_content.js');
+  return injectScript(tab.id, 'ats_content.js', { forceAtsReload });
+}
+
+async function reinjectOpenAtsTabs() {
+  const tabs = await chrome.tabs.query({});
+  await Promise.all(tabs.map(tab => ensureAtsContentScript(tab, { forceAtsReload: true })));
 }
 
 function sendJobrightTabMessage(tabId, message, callback = () => {}) {
@@ -118,9 +134,15 @@ async function clickIveAppliedDirectly(tabId) {
         const button = [...document.querySelectorAll('button, [role="button"]')]
           .filter(el => {
             const rect = el.getBoundingClientRect();
-            const text = (el.textContent || '').trim().toLowerCase().replace(/\s+/g, ' ');
+            const labels = [
+              el.textContent || '',
+              el.getAttribute('aria-label') || '',
+              el.getAttribute('title') || '',
+            ];
             return rect.width > 0 && rect.height > 0 &&
-              /^i['\u2019]ve applied\.?$/.test(text);
+              labels.some(label => /^(?:i['\u2019]ve|i have|i) applied[.!]?$/i.test(
+                String(label).trim().replace(/\s+/g, ' '),
+              ));
           })
           .sort((a, b) =>
             b.getBoundingClientRect().bottom - a.getBoundingClientRect().bottom
@@ -394,6 +416,13 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     const company = sanitizeScreenshotPart(msg.context?.company || '');
     const title = sanitizeScreenshotPart(msg.context?.title || '');
     const secondsRemaining = Math.max(1, Number(msg.secondsRemaining) || 30);
+    if (_sender?.tab?.id) {
+      chrome.tabs.sendMessage(
+        _sender.tab.id,
+        { type: 'PLAY_STUCK_JOB_WARNING_SOUND' },
+        () => void chrome.runtime.lastError,
+      );
+    }
     chrome.notifications.create(
       `jobright-stuck-${_sender?.tab?.id || 'active'}`,
       {
@@ -483,12 +512,13 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       const target = tabs.find(t => t.id === senderTabId) ||
         tabs.find(t => t.active) ||
         tabs[0];
+      const confirmedFailure = !!msg.confirmedFailure;
       const payload = {
         type: 'TRIGGER_IVE_APPLIED',
         atsOrigin: msg.origin,
         atsUrl: msg.url,
-        confirmedSuccess: !!msg.confirmedSuccess,
-        confirmedFailure: !!msg.confirmedFailure,
+        confirmedSuccess: !confirmedFailure,
+        confirmedFailure,
       };
       let attempts = 0;
       const send = async () => {
@@ -503,6 +533,24 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       send();
     });
     return false;
+  }
+
+  if (msg.type === 'ATS_VALIDATION_ERROR') {
+    chrome.tabs.query({ url: 'https://jobright.ai/*' }, (tabs) => {
+      if (!tabs?.length) return;
+      const senderTabId = _sender?.tab?.id;
+      const target = tabs.find(t => t.id === senderTabId) ||
+        tabs.find(t => t.active) ||
+        tabs[0];
+      sendJobrightTabMessage(target.id, {
+        type: 'ATS_VALIDATION_ERROR',
+        atsOrigin: msg.origin,
+        atsUrl: msg.url,
+        fields: Array.isArray(msg.fields) ? msg.fields.slice(0, 12) : [],
+      }, () => {});
+    });
+    sendResponse({ ok: true });
+    return true;
   }
 
   if (msg.type === 'JOBRIGHT_FORM_COMPLETE_STATE') {

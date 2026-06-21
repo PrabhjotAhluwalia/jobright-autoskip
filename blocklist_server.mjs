@@ -22,8 +22,20 @@ function normalizeCompany(name) {
   return String(name || '').toLowerCase().trim();
 }
 
+const BLOCKLIST_COMPANY_MIGRATION_REMOVALS = new Set([
+  'airbn',
+  'airbnb',
+  'braintrust',
+  'delta dental of new jersey and connecticut',
+  'lyft',
+  'mutual of omaha mortgage',
+  'zynga',
+]);
+
 function normalizeBlocklist(list) {
-  return [...new Set((list || []).map(normalizeCompany).filter(Boolean))].sort();
+  return [...new Set((list || [])
+    .map(normalizeCompany)
+    .filter(company => company && !BLOCKLIST_COMPANY_MIGRATION_REMOVALS.has(company)))].sort();
 }
 
 async function readBlocklist() {

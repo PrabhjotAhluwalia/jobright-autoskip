@@ -18,6 +18,7 @@ const emptyMsg          = document.getElementById('emptyMsg');
 const blocklistCount    = document.getElementById('blocklistCount');
 const addCompanyInput   = document.getElementById('addCompanyInput');
 const addCompanyBtn     = document.getElementById('addCompanyBtn');
+const filterCompanyInput = document.getElementById('filterCompanyInput');
 const toggleBtn         = document.getElementById('toggleBtn');
 const gmailCard         = document.getElementById('gmailCard');
 const gmailDot          = document.getElementById('gmailDot');
@@ -31,6 +32,8 @@ const clearSuccessPhrasesBtn = document.getElementById('clearSuccessPhrasesBtn')
 const successPhrasesStatus = document.getElementById('successPhrasesStatus');
 
 let currentTab = null;
+let currentBlocklist = [];
+let currentBlocklistEnabled = true;
 const PROFILE_CORRECTION_FLAG = 'atsProfileCorrectionEnabled';
 const CUSTOM_SUCCESS_PHRASES_KEY = 'customTerminalSuccessPhrases';
 
@@ -123,6 +126,8 @@ function setUI(enabled, count, blocklistEnabled, blocklist, autoAppliedEnabled, 
 }
 
 function renderBlocklist(blocklistEnabled, blocklist) {
+  currentBlocklistEnabled = blocklistEnabled;
+  currentBlocklist = blocklist;
   blocklistToggle.className  = 'toggle' + (blocklistEnabled ? '' : ' off');
   blocklistBadge.textContent = blocklistEnabled ? 'ON' : 'OFF';
   blocklistBadge.className   = 'status-badge ' + (blocklistEnabled ? 'on' : 'off');
@@ -130,11 +135,19 @@ function renderBlocklist(blocklistEnabled, blocklist) {
 
   companyListEl.querySelectorAll('.company-item').forEach(el => el.remove());
 
-  if (blocklist.length === 0) {
+  const query = filterCompanyInput.value.trim().toLowerCase();
+  const visibleCompanies = query
+    ? blocklist.filter(company => company.toLowerCase().includes(query))
+    : blocklist;
+
+  if (visibleCompanies.length === 0) {
     emptyMsg.style.display = 'block';
+    emptyMsg.innerHTML = blocklist.length && query
+      ? 'No matching blocklisted companies.'
+      : 'No companies blocklisted yet.<br>They get added automatically when skipped.';
   } else {
     emptyMsg.style.display = 'none';
-    blocklist.forEach(company => {
+    visibleCompanies.forEach(company => {
       const item = document.createElement('div');
       item.className = 'company-item';
 
@@ -381,6 +394,9 @@ function addCompany() {
 
 addCompanyBtn.addEventListener('click', addCompany);
 addCompanyInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') addCompany(); });
+filterCompanyInput.addEventListener('input', () => {
+  renderBlocklist(currentBlocklistEnabled, currentBlocklist);
+});
 
 // ─── Remove one company ───────────────────────────────────────────────────────
 

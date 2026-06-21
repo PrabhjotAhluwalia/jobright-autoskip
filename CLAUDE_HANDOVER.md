@@ -1,6 +1,6 @@
 # Claude Handover: JobRight Automation Extension
 
-Last updated: June 12, 2026
+Last updated: June 21, 2026
 
 ## Purpose
 
@@ -15,8 +15,7 @@ credential vault and can later be shared, cloned, or exposed.
 
 ## Current Repository State
 
-The working tree contains a broad set of user-requested changes that are not in
-the previous `main` commit. They include:
+The current branch includes the following user-requested automation changes:
 
 - ATS form repair and validation retry logic.
 - Fallback resume and generic cover-letter uploads.
@@ -32,6 +31,64 @@ the previous `main` commit. They include:
 - macOS and Windows screenshot-helper support.
 - Auto-queue and blocklist changes.
 - Navjeet setup documents replacing the legacy setup documents.
+- Exact-message autofill-only skip handling that is resilient to JobRight card
+  wrapper changes.
+- ATS-tab reinjection after extension reload/startup so OTP polling does not
+  remain attached to an invalidated extension context.
+
+### June 21 Continuation Notes
+
+Recent behavior in the current code:
+
+- ATS confirmation is never converted into JobRight Skip. Confirmed success
+  repeatedly clicks `I've Applied`; if JobRight does not render that control,
+  the card is left unskipped and a diagnostic is logged.
+- ATS validation errors pause JobRight cancellation, reassert the exact
+  selected binary control, and log the error text, field name, control type,
+  value, state, and whether the click was dispatched.
+- Resume and cover-letter fallback uploads use the bundled PDFs. Their logs
+  identify missing file inputs, asset-fetch failures, assignment failures,
+  non-persistent files, and successful attachment.
+- ATS validation banners are processed even when JobRight reports a separate
+  and incomplete missing-field list. Re-submit only after every ATS-reported
+  field verifies as resolved. Never invent a desired salary; an unresolved
+  salary must leave the application in correction state.
+- Work authorization is answered Yes and visa sponsorship No. Location
+  questions prefer Yes/onsite, then local/no-relocation, then willing to
+  relocate; remote options are rejected. The special San Francisco and
+  conditional `if not currently in ... willing to relocate` phrasings answer
+  Yes.
+- Age-category questions choose `Under 30` or a 20-29-style option only. They
+  never choose a 30+ category; if no allowed option is present, select
+  `Prefer not to answer`.
+- Credential, certification, designation, and license checkbox lists must not
+  retain multiple selections. Prefer an explicit `None` option and clear every
+  other box; if no `None` exists, clear the selections rather than claiming an
+  unknown credential.
+- When JobRight reports `Form complete` and displays its left-pane `Submit Now`
+  action, click it once for the active job. ATS repair retries still re-submit
+  after mandatory error fields are verified resolved.
+- Blank LinkedIn inputs are filled with the configured LinkedIn URL.
+- Timeout skips suppress blocklist learning. Lyft and the known false-positive
+  companies are removed from local blocklists by the migration removal set.
+- The 70-second stuck warning sends both a browser notification and a short
+  WebAudio beep in the JobRight tab.
+- Auto-build queue must be enabled in the popup; it continues scanning while
+  an application run is active. Do not press Start or submit applications via
+  the UI without the user's explicit request.
+- When the exact visible message `This job supports application autofill only
+  on the application site` appears, click Skip inside that same bounded,
+  left-pane application card. Do not use a Skip control from historical chat
+  content or another card.
+- An OTP email can be a new message in an existing Gmail thread. Gmail message
+  IDs—not thread IDs—are used for baseline and deduplication. An
+  `Extension context invalidated` status means the ATS script was stale after
+  an extension reload; the background now reinjects open ATS tabs on install
+  and browser startup.
+
+After every source edit, reload the unpacked extension and refresh both the
+JobRight page and the active ATS frame. ATS iframe logs can be visible only in
+the frame-specific DevTools context.
 
 ## Important Known Issue
 
@@ -151,6 +208,14 @@ entry. The surgical fix should:
 - Negative terminal states such as rate limits, duplicate applications, or
   application caps must not be treated as successful submission.
 
+### Autofill-only JobRight Cards
+
+- The exact `This job supports application autofill only on the application
+  site` message is an explicit instruction to skip the active JobRight card.
+- Find the Skip control in the same bounded left-pane card as that message.
+- This exact-message path exists in addition to the structural active-card
+  detector, so a JobRight wrapper change does not strand the application.
+
 ### ATS Form Repair
 
 - When an ATS reports a required field as missing even though a value appears
@@ -162,13 +227,21 @@ entry. The surgical fix should:
 
 ## Current Answer Rules
 
+- Legal/full name or `Legal First & Last Name`: `Prabhjot Singh Ahluwalia`.
+- First name: `Prabhjot`; last name: `Singh Ahluwalia`.
 - Current company/employer: `Georgia Tech`.
-- Referral name: `NA - I applied directly`.
+- Employment-restriction, non-compete, non-solicitation, and current/former
+  employer agreement questions: `No`; never fill them with `Georgia Tech`.
+- Referral name: `NA`.
 - Previous employee/employed previously: `No`.
 - Work authorization in the United States: `Yes`.
 - Future sponsorship requirement: `No`.
 - Onsite, hybrid, commuting, relocation, or stated in-person schedule works:
-  `Yes`, including free-text fields.
+  `Yes`, including radio, native-select, custom-dropdown, and free-text
+  fields. This includes questions such as `Are you willing to work in office,
+  5-days a week?`.
+- `Are you familiar with ...?` capability questions: `Yes`, including custom
+  dropdowns.
 - Recruiting, email, SMS, or marketing communications: `Yes`.
 - Acknowledgment/consent: prefer `I agree`, then `Yes`.
 - Accuracy, truthful-information, and falsification acknowledgments: `Yes`.
@@ -241,7 +314,9 @@ also be configured separately with `gh auth login`.
 5. Enable Developer mode.
 6. Choose Load unpacked and select the repository directory.
 7. Reload the extension after every code change.
-8. Reload the open JobRight tab after reloading the extension.
+8. Refresh the open JobRight tab and any active ATS application after reloading
+   the extension. Open ATS tabs are also reinjected automatically to recover
+   an interrupted OTP poll.
 
 ## Validation Commands
 

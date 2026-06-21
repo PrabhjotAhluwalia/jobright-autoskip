@@ -138,6 +138,7 @@
       font-size: 11px; color: #374151; background: #fff; outline: none;
     }
     .add-company-input:focus { border-color: #6366f1; }
+    .search-company-input { margin: 0 0 6px; width: 100%; box-sizing: border-box; }
     .add-company-btn {
       padding: 5px 10px; background: #6366f1; color: #fff; border: none;
       border-radius: 6px; font-size: 11px; font-weight: 600; cursor: pointer;
@@ -359,6 +360,9 @@
                placeholder="Add company name..." maxlength="80" />
         <button id="addCompanyBtn" class="add-company-btn">+ Add</button>
       </div>
+
+      <input type="search" id="filterCompanyInput" class="add-company-input search-company-input"
+             placeholder="Search blocklisted companies..." maxlength="80" />
 
       <div class="company-list" id="companyList">
         <div class="blocklist-empty" id="emptyMsg">

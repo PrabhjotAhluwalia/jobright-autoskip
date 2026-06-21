@@ -19,9 +19,12 @@ application sent
 thank you for your interest
 we'll be back in touch soon
 will get back to you soon
+will get back to you if there is a fit
 interested in joining us
+Thank you for appplying
 thrilled that you are interested in joining us
 you did it
+Thank you for submitting your application
 officially in review
 background is a match
 already applied to this position
@@ -36,4 +39,3 @@ a recruiter will contact you
 Thank you for your
 Thank you for sharing your 
 we will be in touch soon
-

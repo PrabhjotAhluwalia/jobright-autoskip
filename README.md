@@ -3,6 +3,26 @@
 Private Chrome extension for JobRight queue automation, ATS completion recovery,
 Gmail OTP support, and configurable application handling.
 
+## What it automates
+
+- Skips the active JobRight card when it visibly says
+  `This job supports application autofill only on the application site`.
+- Completes supported ATS forms, repairs reported required fields, uploads the
+  bundled fallback resume/cover letter only when appropriate, and returns to
+  JobRight after a confirmed submission.
+- Retrieves fresh Gmail OTPs, including new messages added to an existing email
+  thread. If an extension reload invalidates an ATS polling context, open ATS
+  tabs are reinjected automatically.
+- Saves a screenshot before a genuinely stuck application is skipped.
+
+## Answering safeguards
+
+The extension applies only the profile rules configured in `ats_content.js`.
+Review every application before submission. In particular, it answers the
+configured work-authorization, sponsorship, office/relocation, employment
+restriction, familiarity/capability, contact, and profile-name questions; it
+does not invent salary, credentials, or unknown profile details.
+
 ## Local setup
 
 ### Screenshot helper

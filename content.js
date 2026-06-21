@@ -47,6 +47,9 @@ let alive                = true;
 let lastMoreJobsPromptAt = 0;
 let lastRetryClickAt     = 0;
 let lastTerminalAppliedAt = 0;
+let atsValidationHoldUntil = 0;
+let atsFailureGraceSignature = '';
+let atsFailureGraceStartedAt = 0;
 let appliedTransitionTimer = null;
 let appliedTransitionSignature = '';
 let leverProtectedJobSignature = '';
@@ -58,6 +61,7 @@ let stuckJobSkipSignature = '';
 let stuckJobScreenshotSignature = '';
 let stuckJobWarningSignature = '';
 let pendingStuckScreenshotSignature = '';
+let timeoutCancellationLearningSuppressedUntil = 0;
 let lastStuckScreenshotAttemptAt = 0;
 let submissionCountSincePrompt = 0;
 let submissionSeenCounts = new Map();
@@ -65,6 +69,8 @@ let submissionCounterReady = false;
 let pendingChatPromptTimer = null;
 let lastSharedBlocklistSyncAt = 0;
 let lastFormCompleteState = null;
+let lastJobrightSubmitNowSignature = '';
+let lastJobrightSubmitNowAt = 0;
 let lastMissingFieldsSignature = '';
 let lastMissingFieldsPublishedAt = 0;
 const processedCancellationSignatures = new Set();
@@ -78,6 +84,7 @@ let lastShowMoreMatchesAt = 0;
 let lastAutoQueueStartAt = 0;
 let lastAutoQueueAddAt = 0;
 let lastViewAllClickAt = 0;
+let lastAutoQueueActiveRunLogAt = 0;
 let moreJobsPromptInFlight = false;
 let moreJobsPromptArmed = true;
 let autoQueueWaitingForMoreMatches = false;
@@ -109,6 +116,15 @@ const INVALID_BLOCKLIST_COMPANIES = new Set([
   'unknown',
   'va',
 ]);
+const BLOCKLIST_COMPANY_MIGRATION_REMOVALS = new Set([
+  'airbn',
+  'airbnb',
+  'braintrust',
+  'delta dental of new jersey and connecticut',
+  'lyft',
+  'mutual of omaha mortgage',
+  'zynga',
+]);
 
 globalThis.__jobrightContentPing = () => {
   try { return alive && !!chrome.runtime?.id; } catch (_) { return false; }
@@ -120,6 +136,7 @@ const JOB_STUCK_WARNING_MS = 70 * 1000;
 const JOB_STUCK_TIMEOUT_MS = 100 * 1000;
 const STUCK_SCREENSHOT_RETRY_MS = 10 * 1000;
 const TIMEOUT_BLOCKLIST_SUPPRESSION_MS = 5 * 60 * 1000;
+const TIMEOUT_GLOBAL_BLOCKLIST_SUPPRESSION_MS = 10 * 60 * 1000;
 const SYSTEM_PROMPT_SUBMISSION_INTERVAL = 10;
 const SUBMISSION_COUNT_STORAGE_KEY = 'jobrightSubmissionCountSincePrompt';
 const SUBMISSION_SEEN_STORAGE_KEY = 'jobrightSubmissionSeenCounts';
@@ -144,6 +161,8 @@ const JOBRIGHT_TITLE_EXCLUSION_FALLBACKS = [
   'product marketing lead',
   'product marketing',
   'marketing product manager',
+  'designer',
+  'leader',
 ];
 const JOBRIGHT_TITLE_REGEX_EXCLUSION_FALLBACKS = [
   '\\b(?:vp|vice president)\\b',
@@ -403,8 +422,8 @@ function captureCancelledApplicationCompanies() {
     const signature = normalizeText(`${title}@${company}`);
     if (!isValidBlocklistCompany(company) || processedCancellationSignatures.has(signature)) continue;
     const companyKey = canonicalCompany(company);
-    const suppressedUntil = timeoutSkippedCompanies.get(companyKey) || 0;
-    if (suppressedUntil > Date.now()) {
+    const suppressedUntil = getBlocklistSuppressionUntil(company);
+    if (suppressedUntil > Date.now() || timeoutCancellationLearningSuppressedUntil > Date.now()) {
       processedCancellationSignatures.add(signature);
       console.log(`[JobRight Auto-Skip] ignored timeout cancellation for blocklist: ${company}`);
       continue;
@@ -457,7 +476,12 @@ function isValidBlocklistCompany(name) {
 }
 
 function normalizeBlocklist(list) {
-  return [...new Set((list || []).map(normalizeCompany).filter(isValidBlocklistCompany))].sort();
+  return [...new Set((list || [])
+    .map(normalizeCompany)
+    .filter(company =>
+      isValidBlocklistCompany(company) &&
+      !BLOCKLIST_COMPANY_MIGRATION_REMOVALS.has(company),
+    ))].sort();
 }
 
 function persistBlocklist() {
@@ -500,6 +524,26 @@ function isBlocklisted(companyName) {
     entry === norm ||
     (canonical.length >= 4 && canonicalCompany(entry) === canonical),
   );
+}
+
+function getBlocklistSuppressionUntil(companyName) {
+  const canonical = canonicalCompany(companyName);
+  if (!canonical) return 0;
+  const direct = timeoutSkippedCompanies.get(canonical) || 0;
+  if (direct) return direct;
+
+  for (const [suppressedCompany, suppressedUntil] of timeoutSkippedCompanies) {
+    if (
+      suppressedUntil > Date.now() &&
+      canonical.length >= 5 &&
+      suppressedCompany.length >= 5 &&
+      (canonical.startsWith(suppressedCompany) || suppressedCompany.startsWith(canonical))
+    ) {
+      return suppressedUntil;
+    }
+  }
+
+  return 0;
 }
 
 function addToBlocklist(companyName) {
@@ -743,6 +787,33 @@ function hasRenderedBox(el) {
     style.visibility !== 'hidden';
 }
 
+function playStuckJobWarningSound() {
+  try {
+    const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextCtor) return false;
+    const ctx = new AudioContextCtor();
+    const start = ctx.currentTime + 0.02;
+    [0, 0.22, 0.44].forEach((offset) => {
+      const oscillator = ctx.createOscillator();
+      const gain = ctx.createGain();
+      oscillator.type = 'sine';
+      oscillator.frequency.setValueAtTime(880, start + offset);
+      gain.gain.setValueAtTime(0.0001, start + offset);
+      gain.gain.exponentialRampToValueAtTime(0.18, start + offset + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, start + offset + 0.16);
+      oscillator.connect(gain);
+      gain.connect(ctx.destination);
+      oscillator.start(start + offset);
+      oscillator.stop(start + offset + 0.18);
+    });
+    setTimeout(() => ctx.close().catch(() => {}), 900);
+    return true;
+  } catch (err) {
+    console.warn('[JobRight Auto-Skip] stuck-job warning sound failed', err);
+    return false;
+  }
+}
+
 function isInsideUserChatBubble(el) {
   for (let node = el; node && node !== document.body; node = node.parentElement) {
     const bg = getComputedStyle(node).backgroundColor || '';
@@ -932,14 +1003,24 @@ function countNewSubmissionStatuses() {
   recordConfirmedSuccessfulSubmissions(added);
 }
 
+function isIveAppliedLabel(text = '') {
+  return /^(?:i['\u2019]ve|i have|i) applied[.!]?$/i.test(
+    String(text).trim().replace(/\s+/g, ' '),
+  );
+}
+
 function findIveAppliedButton(forceClick = false) {
   return [...document.querySelectorAll('button, [role="button"]')]
     .filter(btn => {
       const r = btn.getBoundingClientRect();
-      const text = (btn.textContent || '').trim().toLowerCase().replace(/\s+/g, ' ');
+      const labels = [
+        btn.textContent || '',
+        btn.getAttribute('aria-label') || '',
+        btn.getAttribute('title') || '',
+      ];
       return r.width > 0 && r.height > 0 &&
         (forceClick || !btn.disabled) &&
-        /^i['\u2019]ve applied\.?$/.test(text);
+        labels.some(isIveAppliedLabel);
     })
     .sort((a, b) => b.getBoundingClientRect().bottom - a.getBoundingClientRect().bottom)[0] || null;
 }
@@ -980,15 +1061,26 @@ function ensureIveAppliedTransition(confirmedSuccess = false) {
 
     attempts++;
     triggerIveApplied(true);
-    if (attempts < 8) {
+    if (attempts < 20) {
       appliedTransitionTimer = setTimeout(attempt, 750);
       return;
     }
 
     appliedTransitionTimer = null;
     appliedTransitionSignature = '';
-    if (confirmedSuccess && skipActiveApplication('ATS success after I’ve Applied retries')) {
-      recordConfirmedSuccessfulSubmissions(1, 'ATS success fallback');
+    if (confirmedSuccess) {
+      const visibleApplyCandidates = [...document.querySelectorAll('button, [role="button"]')]
+        .filter(btn => {
+          const r = btn.getBoundingClientRect();
+          const text = normalizeText(`${btn.textContent || ''} ${btn.getAttribute('aria-label') || ''} ${btn.getAttribute('title') || ''}`);
+          return r.width > 0 && r.height > 0 && /\bappl(?:y|ied|ication)\b/.test(text);
+        })
+        .map(btn => normalizeText(`${btn.textContent || ''} ${btn.getAttribute('aria-label') || ''} ${btn.getAttribute('title') || ''}`))
+        .slice(0, 12);
+      console.log('[JobRight Auto-Skip] ATS submitted; no I’ve Applied control appeared after 15 seconds. Card left unskipped.', {
+        activeJob: getActiveJobContext(),
+        visibleApplyCandidates,
+      });
     }
   };
 
@@ -1005,6 +1097,11 @@ function skipActiveApplication(
   reason,
   { afterScreenshot = false, suppressBlocklistLearning = false } = {},
 ) {
+  if (/ATS (?:confirmed )?success/i.test(reason)) {
+    console.warn(`[JobRight Auto-Skip] blocked Skip for confirmed ATS success (${reason})`);
+    return false;
+  }
+
   const snapshot = getActiveApplicationSnapshot();
   if (!afterScreenshot &&
       snapshot?.signature &&
@@ -1019,6 +1116,10 @@ function skipActiveApplication(
   const skip = snapshot?.card ? findSkipControlInContainer(snapshot.card) : null;
   if (!skip) return false;
   if (suppressBlocklistLearning && snapshot?.context?.company) {
+    timeoutCancellationLearningSuppressedUntil = Math.max(
+      timeoutCancellationLearningSuppressedUntil,
+      Date.now() + TIMEOUT_GLOBAL_BLOCKLIST_SUPPRESSION_MS,
+    );
     timeoutSkippedCompanies.set(
       canonicalCompany(snapshot.context.company),
       Date.now() + TIMEOUT_BLOCKLIST_SUPPRESSION_MS,
@@ -1102,22 +1203,28 @@ function handleAtsTerminalApplicationState(confirmedSuccess = false) {
   if (confirmedSuccess) {
     leverConfirmedSuccessSignature = getActiveApplicationSnapshot()?.signature || '';
     leverProtectedJobSignature = '';
+    return ensureIveAppliedTransition(true);
   }
-  if (findIveAppliedButton(true)) return ensureIveAppliedTransition(confirmedSuccess);
+  if (findIveAppliedButton(true)) return ensureIveAppliedTransition(false);
 
-  const skipped = skipActiveApplication(
-    confirmedSuccess ? 'ATS confirmed success' : 'ATS terminal state',
-  );
-  if (skipped && confirmedSuccess) {
-    // A fallback Skip does not create JobRight's normal submitted chat line.
-    recordConfirmedSuccessfulSubmissions(1, 'ATS success fallback');
-  }
-  return skipped;
+  return skipActiveApplication('ATS terminal state');
 }
 
 function handleAtsTerminalFailureState() {
   if (!autoAppliedEnabled) return false;
+  if (Date.now() < atsValidationHoldUntil) {
+    console.log('[JobRight Auto-Skip] kept active application open for ATS field correction');
+    return true;
+  }
   const snapshot = getActiveApplicationSnapshot();
+  const signature = snapshot?.signature || '';
+  if (signature && signature !== atsFailureGraceSignature) {
+    atsFailureGraceSignature = signature;
+    atsFailureGraceStartedAt = Date.now();
+    console.log('[JobRight Auto-Skip] waiting briefly for ATS validation repair before cancellation');
+    return true;
+  }
+  if (signature && Date.now() - atsFailureGraceStartedAt < 2_500) return true;
   if (snapshot?.signature && snapshot.signature === leverProtectedJobSignature) {
     console.log('[JobRight Auto-Skip] ignored Lever failure until confirmed submission');
     return true;
@@ -1887,8 +1994,10 @@ function runAutoQueueBuild() {
   try {
     syncSharedBlocklist();
     if (isJobrightApplicationRunActive()) {
-      autoQueuePendingAdd = null;
-      return;
+      if (Date.now() - lastAutoQueueActiveRunLogAt > 15_000) {
+        lastAutoQueueActiveRunLogAt = Date.now();
+        console.log('[JobRight Auto-Skip] auto-queue continuing while application run is active');
+      }
     }
 
     updateShowMoreMatchesLock();
@@ -1972,8 +2081,30 @@ function isJobrightApplicationFormComplete() {
     /click submit now/.test(text);
 }
 
+function triggerJobrightSubmitNow() {
+  const snapshot = getActiveApplicationSnapshot();
+  const signature = snapshot?.signature || '';
+  if (signature === lastJobrightSubmitNowSignature &&
+      Date.now() - lastJobrightSubmitNowAt < 30_000) return false;
+  const root = snapshot?.card || document;
+  const button = [...root.querySelectorAll('button, [role="button"], a')]
+    .filter(el => {
+      const r = el.getBoundingClientRect();
+      return r.width > 0 && r.height > 0 && !el.disabled &&
+        /^submit now[.!]?$/i.test((el.textContent || '').trim());
+    })
+    .sort((a, b) => b.getBoundingClientRect().bottom - a.getBoundingClientRect().bottom)[0];
+  if (!button) return false;
+  clickLikeUser(button);
+  lastJobrightSubmitNowSignature = signature;
+  lastJobrightSubmitNowAt = Date.now();
+  console.log('[JobRight Auto-Skip] clicked Submit Now after JobRight marked the form complete');
+  return true;
+}
+
 function publishFormCompleteState() {
   const complete = isJobrightApplicationFormComplete();
+  if (complete) triggerJobrightSubmitNow();
   if (complete === lastFormCompleteState) return;
   lastFormCompleteState = complete;
   safeChrome(() =>
@@ -2123,7 +2254,60 @@ function findSkipControlInContainer(container) {
     })[0] || null;
 }
 
-function findTriggeredSkipContainer() {
+// JobRight sometimes changes the wrapper around the active application card.
+// Keep this path anchored to the exact visible autofill-only message rather
+// than requiring getActiveApplicationCard() to recognize that wrapper first.
+// The Skip control must still be inside the same bounded left-pane card, which
+// avoids clicking a Skip link from an older application in chat history.
+function findExactAutofillOnlyPromptSkip() {
+  const matches = [];
+  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+  let textNode;
+
+  while ((textNode = walker.nextNode())) {
+    const message = normalizeText(textNode.nodeValue || '');
+    if (!CONFIG.CONFIRM_TRIGGER_TEXTS.some(trigger => message.includes(trigger))) continue;
+
+    const marker = textNode.parentElement;
+    if (!marker || !isVisibleElement(marker)) continue;
+    const markerRect = marker.getBoundingClientRect();
+    if (markerRect.left >= window.innerWidth * 0.62) continue;
+
+    let card = marker;
+    for (let depth = 0; depth < 12 && card; depth++, card = card.parentElement) {
+      const rect = card.getBoundingClientRect();
+      if (rect.left >= window.innerWidth * 0.62 || rect.width < 200) continue;
+      if (rect.width > window.innerWidth * 0.85 || rect.height > window.innerHeight * 0.9) break;
+
+      const cardText = normalizeText(card.innerText || card.textContent || '');
+      if (!CONFIG.CONFIRM_TRIGGER_TEXTS.some(trigger => cardText.includes(trigger))) continue;
+
+      const btn = findSkipControlInContainer(card);
+      if (!btn) continue;
+      matches.push({
+        marker,
+        card,
+        btn,
+        textLength: cardText.length,
+      });
+      break;
+    }
+  }
+
+  const match = matches.sort((a, b) =>
+    a.textLength - b.textLength ||
+    a.card.getBoundingClientRect().top - b.card.getBoundingClientRect().top,
+  )[0];
+  return match
+    ? {
+        btn: match.btn,
+        label: 'exact autofill-only prompt',
+        company: getCompanyFromBubbleContext(match.marker),
+      }
+    : null;
+}
+
+function findTriggeredSkipContainer({ confirmBubbleOnly = false } = {}) {
   const activeCard = getActiveApplicationCard();
   if (!activeCard) return null;
   const containers = [];
@@ -2171,6 +2355,12 @@ function findTriggeredSkipContainer() {
     }
   }
 
+  if (confirmBubbleOnly) {
+    return containers
+      .sort((a, b) => a.textLength - b.textLength ||
+        a.el.getBoundingClientRect().top - b.el.getBoundingClientRect().top)[0] || null;
+  }
+
   for (const el of document.querySelectorAll('div, section, article, li')) {
     addContainer(el, 'autofill-only card');
   }
@@ -2183,8 +2373,8 @@ function findTriggeredSkipContainer() {
 
 
 
-function findConfirmBubbleSkip() {
-  const match = findTriggeredSkipContainer();
+function findConfirmBubbleSkip(options) {
+  const match = findTriggeredSkipContainer(options);
   if (!match) return null;
   return {
     btn: match.btn,
@@ -2273,13 +2463,20 @@ function tryClickSkip() {
 
   let result;
   try {
+    // This is the explicit JobRight instruction to leave the in-app flow.
+    // Check it before the structural active-card logic so a wrapper change
+    // cannot leave the application stranded.
+    result = findExactAutofillOnlyPromptSkip();
+
     // Once the active job reaches its form/action stage, stale prompt text must
     // not cancel it. Timeout and ATS terminal paths are handled separately.
-    result = activeSnapshot?.timeoutEligible
-      ? findBlocklistSkip()
-      : findConfirmBubbleSkip()
-        || findAnalyzeBubbleCardSkip()
-        || findBlocklistSkip();
+    if (!result) {
+      result = activeSnapshot?.timeoutEligible
+        ? findConfirmBubbleSkip({ confirmBubbleOnly: true }) || findBlocklistSkip()
+        : findConfirmBubbleSkip()
+          || findAnalyzeBubbleCardSkip()
+          || findBlocklistSkip();
+    }
   } catch (err) {
     if (isInvalidated(err)) { shutdown('DOM scan error'); return; }
     return;
@@ -2401,6 +2598,8 @@ try {
       reply({ ok: placeOtpInJobrightChat(msg.otp) });
     } else if (msg.type === 'SEND_JOBRIGHT_SYSTEM_PROMPT') {
       reply({ ok: sendJobrightSystemPrompt(msg.prompt) });
+    } else if (msg.type === 'PLAY_STUCK_JOB_WARNING_SOUND') {
+      reply({ ok: playStuckJobWarningSound() });
     } else if (msg.type === 'ATS_FRAME_STATE') {
       let host = '';
       try { host = new URL(msg.atsUrl || msg.atsOrigin || '').hostname; } catch (_) {}
@@ -2411,6 +2610,13 @@ try {
         }
       }
       reply({ ok: true, protected: !!leverProtectedJobSignature });
+    } else if (msg.type === 'ATS_VALIDATION_ERROR') {
+      // Give the ATS frame time to re-trigger the field and retry submission.
+      // A visible required-field error is never a reason to cancel or learn a
+      // company blocklist entry.
+      atsValidationHoldUntil = Math.max(atsValidationHoldUntil, Date.now() + 20_000);
+      console.log('[JobRight Auto-Skip] ATS validation error received; cancellation paused for repair');
+      reply({ ok: true });
     } else if (msg.type === 'TRIGGER_IVE_APPLIED') {
       let host = '';
       try { host = new URL(msg.atsUrl || msg.atsOrigin || '').hostname; } catch (_) {}
